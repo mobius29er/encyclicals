@@ -249,6 +249,7 @@ export default function DocumentReader({ doc }: { doc: DocumentData }) {
       {ttsOpen && (
         <TTSBar
           blocks={doc.blocks}
+          slug={doc.slug}
           isOpen={ttsOpen}
           onClose={() => setTTSOpen(false)}
           onActiveBlock={setTTSActiveBlock}

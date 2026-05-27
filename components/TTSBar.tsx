@@ -2,10 +2,11 @@
 
 /**
  * TTSBar - Text-to-Speech playback bar
- * Primary engine : Kokoro TTS (Apache 2.0) - onnx-community/Kokoro-82M-v1.0-ONNX
- *   All inference runs in the user's browser via WebAssembly.
- *   No API keys, no server costs. The ~80 MB model is cached after first load.
- * Fallback engine: Web Speech API (system voices), used if Kokoro fails to load.
+ *
+ * Engine priority (auto-detected, user-overridable):
+ *   1. prerecorded — fetches /audio/<slug>/<block-id>.opus, instant on any device
+ *   2. kokoro      — live Kokoro WASM inference (Apache 2.0), am_onyx voice
+ *   3. browser     — Web Speech API system voices, always available
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -14,12 +15,13 @@ import type { DocumentBlock } from '@/types/document';
 
 interface TTSBarProps {
   blocks: DocumentBlock[];
+  slug: string;
   isOpen: boolean;
   onClose: () => void;
   onActiveBlock: (id: string | null) => void;
 }
 
-type Engine   = 'loading' | 'kokoro' | 'browser';
+type Engine   = 'detecting' | 'prerecorded' | 'loading' | 'kokoro' | 'browser';
 type TtsStyle = 'original' | 'balanced' | 'expressive' | 'dramatic';
 
 interface RawAudio { audio: Float32Array; sampling_rate: number }
@@ -61,10 +63,7 @@ const STYLE_PROFILES: Record<TtsStyle, StyleProfile> = {
 };
 
 const KOKORO_STYLE_PAUSE: Record<TtsStyle, number> = {
-  original:    80,
-  balanced:   120,
-  expressive: 160,
-  dramatic:   250,
+  original: 80, balanced: 120, expressive: 160, dramatic: 250,
 };
 
 let _ko: KokoroEngine | null = null;
@@ -95,7 +94,30 @@ async function initKokoro(onPct: (n: number) => void): Promise<KokoroEngine | nu
 
 const sleep = (ms: number): Promise<void> => new Promise(r => window.setTimeout(r, ms));
 
-function playAudio(
+/** Play a decoded AudioBuffer at a given speed. Pause/resume via ctx.suspend/resume. */
+function playBuffer(
+  ctx: AudioContext,
+  buffer: AudioBuffer,
+  srcRef: React.MutableRefObject<AudioBufferSourceNode | null>,
+  speed: number,
+): Promise<void> {
+  return new Promise(resolve => {
+    try {
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.playbackRate.value = speed;
+      src.connect(ctx.destination);
+      src.onended = () => { srcRef.current = null; resolve(); };
+      src.start(0);
+      srcRef.current = src;
+    } catch {
+      resolve();
+    }
+  });
+}
+
+/** Play raw Float32 audio from Kokoro. */
+function playRaw(
   ctx: AudioContext,
   raw: RawAudio,
   srcRef: React.MutableRefObject<AudioBufferSourceNode | null>,
@@ -248,10 +270,12 @@ function prosodyForSentence(
   };
 }
 
-export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBarProps) {
+// ─── component ───────────────────────────────────────────────────────────────
 
-  const [engine, setEngine] = useState<Engine>(() => (_ko ? 'kokoro' : 'loading'));
-  const engineRef = useRef<Engine>(_ko ? 'kokoro' : 'loading');
+export default function TTSBar({ blocks, slug, isOpen, onClose, onActiveBlock }: TTSBarProps) {
+
+  const [engine,  setEngine]  = useState<Engine>('detecting');
+  const engineRef = useRef<Engine>('detecting');
   const [loadPct, setLoadPct] = useState(0);
 
   const [kokoroVoice, setKokoroVoice] = useState<string>(
@@ -262,31 +286,63 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
   const audioCtxRef = useRef<AudioContext | null>(null);
   const audioSrcRef = useRef<AudioBufferSourceNode | null>(null);
 
-  const synthRef    = useRef<SpeechSynthesis | null>(null);
+  const synthRef  = useRef<SpeechSynthesis | null>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
-  const voiceRef    = useRef<SpeechSynthesisVoice | null>(null);
-  const sentQRef    = useRef<string[]>([]);
-  const sentIRef    = useRef(0);
+  const voiceRef  = useRef<SpeechSynthesisVoice | null>(null);
+  const sentQRef  = useRef<string[]>([]);
+  const sentIRef  = useRef(0);
 
   const [playing,  setPlaying]  = useState(false);
   const [paused,   setPaused]   = useState(false);
   const [speed,    setSpeed]    = useState(1);
-  const [info,     setInfo]     = useState(() => (_ko ? 'Ready' : 'Loading voice\u2026'));
+  const [info,     setInfo]     = useState('');
   const [progress, setProgress] = useState(0);
   const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
 
-  const idxRef     = useRef(-1);
-  const playingRef = useRef(false);
-  const pausedRef  = useRef(false);
-  const speedRef   = useRef(1);
-  const sessionRef = useRef(0);
+  const idxRef      = useRef(-1);
+  const playingRef  = useRef(false);
+  const pausedRef   = useRef(false);
+  const speedRef    = useRef(1);
+  const sessionRef  = useRef(0);
 
   const [style, setStyle] = useState<TtsStyle>(() => {
     const saved = storageGet('ttsStyle') as TtsStyle;
     return STYLE_ORDER.includes(saved) ? saved : 'balanced';
   });
   const styleRef = useRef<TtsStyle>('balanced');
+
+  // ── helpers ────────────────────────────────────────────────────────────────
+
+  const makeAudioCtx = () => {
+    const W = window as unknown as Record<string, typeof AudioContext>;
+    const Ctor = window.AudioContext || W.webkitAudioContext;
+    return new Ctor();
+  };
+
+  const stopAudio = () => {
+    if (audioSrcRef.current) {
+      try { audioSrcRef.current.stop(); } catch { /* already stopped */ }
+      audioSrcRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      try { audioCtxRef.current.close(); } catch { /* already closed */ }
+      audioCtxRef.current = null;
+    }
+  };
+
+  const newSession = () => {
+    stopAudio();
+    const s = sessionRef.current + 1;
+    sessionRef.current = s;
+    playingRef.current = true;
+    pausedRef.current  = false;
+    setPlaying(true);
+    setPaused(false);
+    return s;
+  };
+
+  // ── browser (Web Speech API) helpers ──────────────────────────────────────
 
   const loadVoices = useCallback(() => {
     const synth = synthRef.current;
@@ -369,12 +425,67 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
     pausedRef.current  = false;
   }
 
+  // ── prerecorded loop ───────────────────────────────────────────────────────
+
+  async function prerecordedLoop(startIdx: number, session: number) {
+    const ctx = makeAudioCtx();
+    audioCtxRef.current = ctx;
+
+    const fetchBlock = async (block: DocumentBlock): Promise<AudioBuffer | null> => {
+      try {
+        const resp = await fetch(`/audio/${slug}/${block.id}.opus`);
+        if (!resp.ok) return null;
+        const ab = await resp.arrayBuffer();
+        return await ctx.decodeAudioData(ab);
+      } catch { return null; }
+    };
+
+    // Find first valid block
+    let idx = startIdx;
+    while (idx < blocks.length && getReadText(blocks[idx]).length < 2) idx++;
+    if (idx >= blocks.length) return;
+
+    // Pre-fetch first block
+    let nextPromise: Promise<AudioBuffer | null> = fetchBlock(blocks[idx]);
+
+    while (idx < blocks.length && playingRef.current && sessionRef.current === session) {
+      const block = blocks[idx];
+      idxRef.current = idx;
+
+      const audioBuffer = await nextPromise;
+
+      // Advance to next valid block and pre-fetch while current plays
+      let nextIdx = idx + 1;
+      while (nextIdx < blocks.length && getReadText(blocks[nextIdx]).length < 2) nextIdx++;
+      nextPromise = nextIdx < blocks.length ? fetchBlock(blocks[nextIdx]) : Promise.resolve(null);
+
+      if (!playingRef.current || sessionRef.current !== session) return;
+
+      const text = getReadText(block);
+      if (!text || text.length < 2 || !audioBuffer) { idx = nextIdx; continue; }
+
+      onActiveBlock(block.id);
+      setInfo(getTTSLabel(block));
+      setProgress(((idx + 1) / blocks.length) * 100);
+      const el = document.getElementById(block.id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      await playBuffer(ctx, audioBuffer, audioSrcRef, speedRef.current);
+
+      idx = nextIdx;
+      if (playingRef.current && sessionRef.current === session && idx < blocks.length) {
+        await sleep(200);
+      }
+    }
+    if (sessionRef.current === session && playingRef.current) ttsStopFn();
+  }
+
+  // ── kokoro loop ────────────────────────────────────────────────────────────
+
   async function kokoroLoop(startIdx: number, session: number) {
     const tts = _ko;
     if (!tts) return;
-    const AudioCtorFallback = (window as unknown as Record<string, typeof AudioContext>).webkitAudioContext;
-    const AudioCtorToUse = window.AudioContext || AudioCtorFallback;
-    const ctx = new AudioCtorToUse();
+    const ctx = makeAudioCtx();
     audioCtxRef.current = ctx;
     let idx = startIdx;
     while (idx < blocks.length && playingRef.current && sessionRef.current === session) {
@@ -388,8 +499,6 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
       const el = document.getElementById(block.id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       const sentences = splitSentences(text);
-      // Lookahead buffer: pre-generate the next sentence while the current one plays.
-      // This hides inference latency behind audio playback, eliminating gaps.
       type GenResult = RawAudio | null;
       let nextPromise: Promise<GenResult> = sentences.length > 0
         ? tts.generate(sentences[0], { voice: kokoroVoiceRef.current, speed: speedRef.current })
@@ -398,7 +507,6 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
       for (let si = 0; si < sentences.length; si++) {
         if (!playingRef.current || sessionRef.current !== session) return;
         const rawAudio = await nextPromise;
-        // Start generating next sentence immediately (runs during playback below)
         if (si + 1 < sentences.length) {
           const nextText = sentences[si + 1];
           const voiceSnap = kokoroVoiceRef.current;
@@ -410,13 +518,8 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
         }
         if (!rawAudio) continue;
         if (!playingRef.current || sessionRef.current !== session) return;
-        await playAudio(ctx, rawAudio, audioSrcRef);
-        if (
-          si < sentences.length - 1 &&
-          playingRef.current &&
-          sessionRef.current === session &&
-          ctx.state === 'running'
-        ) {
+        await playRaw(ctx, rawAudio, audioSrcRef);
+        if (si < sentences.length - 1 && playingRef.current && sessionRef.current === session && ctx.state === 'running') {
           await sleep(KOKORO_STYLE_PAUSE[styleRef.current]);
         }
       }
@@ -425,20 +528,13 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
         await sleep(200);
       }
     }
-    if (sessionRef.current === session && playingRef.current) {
-      ttsStopFn();
-    }
+    if (sessionRef.current === session && playingRef.current) ttsStopFn();
   }
 
+  // ── stop ──────────────────────────────────────────────────────────────────
+
   const ttsStopFn = useCallback(() => {
-    if (audioSrcRef.current) {
-      try { audioSrcRef.current.stop(); } catch { /* already stopped */ }
-      audioSrcRef.current = null;
-    }
-    if (audioCtxRef.current) {
-      try { audioCtxRef.current.close(); } catch { /* already closed */ }
-      audioCtxRef.current = null;
-    }
+    stopAudio();
     if (synthRef.current) synthRef.current.cancel();
     playingRef.current = false;
     pausedRef.current  = false;
@@ -447,11 +543,13 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
     sentIRef.current   = 0;
     setPlaying(false);
     setPaused(false);
-    setInfo('Stopped');
+    setInfo('');
     setProgress(0);
     onActiveBlock(null);
     onClose();
   }, [onActiveBlock, onClose]);
+
+  // ── playback control ──────────────────────────────────────────────────────
 
   const findStartIdx = useCallback(() => {
     const sy = window.scrollY + window.innerHeight / 3;
@@ -464,37 +562,35 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
   }, [blocks]);
 
   const playFromIdx = useCallback((idx: number) => {
-    if (engineRef.current === 'kokoro') {
-      if (audioSrcRef.current) { try { audioSrcRef.current.stop(); } catch {} audioSrcRef.current = null; }
-      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch {} audioCtxRef.current = null; }
-      const session = sessionRef.current + 1;
-      sessionRef.current = session;
-      idxRef.current  = idx;
-      playingRef.current = true;
-      pausedRef.current  = false;
-      setPlaying(true);
-      setPaused(false);
+    const eng = engineRef.current;
+    if (eng === 'detecting' || eng === 'loading') return;
+    if (synthRef.current) synthRef.current.cancel();
+    const session = newSession();
+    idxRef.current = idx;
+    if (eng === 'prerecorded') {
+      prerecordedLoop(idx, session);
+    } else if (eng === 'kokoro') {
       kokoroLoop(idx, session);
-    } else if (engineRef.current === 'browser') {
-      if (synthRef.current) synthRef.current.cancel();
-      pausedRef.current  = false;
-      sentQRef.current   = [];
-      sentIRef.current   = 0;
-      idxRef.current     = idx;
+    } else {
+      // browser
+      pausedRef.current = false;
+      sentQRef.current  = [];
+      sentIRef.current  = 0;
       speakItem();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blocks]);
+  }, [blocks, slug]);
 
   const ttsStart = useCallback(() => {
-    if (engineRef.current === 'loading') { setInfo('Loading voice\u2026'); return; }
+    if (engineRef.current === 'detecting' || engineRef.current === 'loading') return;
     playFromIdx(findStartIdx());
   }, [findStartIdx, playFromIdx]);
 
   const ttsToggle = useCallback(() => {
-    if (engineRef.current === 'loading') return;
-    if (engineRef.current === 'kokoro') {
-      if (!playingRef.current && !pausedRef.current) { ttsStart(); return; }
+    const eng = engineRef.current;
+    if (eng === 'detecting' || eng === 'loading') return;
+    if (eng === 'prerecorded' || eng === 'kokoro') {
+      if (!playingRef.current) { ttsStart(); return; }
       if (pausedRef.current) {
         audioCtxRef.current?.resume();
         pausedRef.current = false;
@@ -510,7 +606,6 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
     const synth = synthRef.current;
     if (!synth) return;
     if (!playingRef.current) {
-      if (idxRef.current < 0) { ttsStart(); return; }
       if (pausedRef.current) {
         synth.resume();
         pausedRef.current  = false;
@@ -518,7 +613,7 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
         setPaused(false);
         setPlaying(true);
       } else {
-        speakItem();
+        ttsStart();
       }
       return;
     }
@@ -532,7 +627,6 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
       pausedRef.current = true;
       setPaused(true);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ttsStart]);
 
   const ttsNext = useCallback(() => {
@@ -564,6 +658,51 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
     storageSet('ttsStyle', next);
   }, []);
 
+  /** Switch engine mid-session: stop current, start new engine from same position */
+  const switchEngine = useCallback((target: Engine) => {
+    stopAudio();
+    if (synthRef.current) synthRef.current.cancel();
+    playingRef.current = false;
+    pausedRef.current  = false;
+    setPlaying(false);
+    setPaused(false);
+    engineRef.current = target;
+    setEngine(target);
+    storageSet('ttsEngine', target);
+    setVoiceMenuOpen(false);
+    const resumeIdx = Math.max(idxRef.current, 0);
+    window.setTimeout(() => {
+      const session = newSession();
+      idxRef.current = resumeIdx;
+      if (target === 'prerecorded') {
+        prerecordedLoop(resumeIdx, session);
+      } else if (target === 'kokoro') {
+        if (_ko) {
+          kokoroLoop(resumeIdx, session);
+        } else {
+          engineRef.current = 'loading';
+          setEngine('loading');
+          initKokoro(pct => setLoadPct(pct)).then(model => {
+            if (model) {
+              engineRef.current = 'kokoro';
+              window.setTimeout(() => { setEngine('kokoro'); setInfo(''); }, 0);
+              kokoroLoop(resumeIdx, session);
+            } else {
+              engineRef.current = 'browser';
+              window.setTimeout(() => setEngine('browser'), 0);
+              speakItem();
+            }
+          });
+        }
+      } else {
+        speakItem();
+      }
+    }, 50);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocks, slug]);
+
+  // ── mount effect ──────────────────────────────────────────────────────────
+
   useEffect(() => {
     document.body.classList.add('tts-on');
     synthRef.current = window.speechSynthesis || null;
@@ -593,8 +732,10 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
     };
     document.addEventListener('click', handleClick);
     document.addEventListener('dblclick', handleDblClick);
+
     let cancelled = false;
     let startTimer = 0;
+
     const cleanup = () => {
       cancelled = true;
       window.clearTimeout(startTimer);
@@ -604,110 +745,100 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
       document.removeEventListener('click', handleClick);
       document.removeEventListener('dblclick', handleDblClick);
       speechSynthesis.onvoiceschanged = prevVoicesChanged;
-      if (audioSrcRef.current) { try { audioSrcRef.current.stop(); } catch {} audioSrcRef.current = null; }
-      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch {} audioCtxRef.current = null; }
+      stopAudio();
       if (synthRef.current) synthRef.current.cancel();
       playingRef.current = false;
       onActiveBlock(null);
     };
-    if (_ko) {
-      engineRef.current = 'kokoro';
-      window.setTimeout(() => { if (!cancelled) { setEngine('kokoro'); setInfo('Ready'); } }, 0);
-      startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 50);
-      return cleanup;
-    }
-    engineRef.current = 'loading';
-    window.setTimeout(() => { if (!cancelled) { setEngine('loading'); setInfo('Loading voice…'); } }, 0);
-    initKokoro(pct => { if (!cancelled) setLoadPct(pct); })
-      .then(model => {
-        if (cancelled) return;
-        if (model) {
-          setEngine('kokoro');
+
+    const savedEngine = storageGet('ttsEngine') as Engine | null;
+
+    // Probe for pre-recorded audio
+    const probeUrl = `/audio/${slug}/p1.opus`;
+    fetch(probeUrl, { method: 'HEAD' }).then(r => {
+      if (cancelled) return;
+      if (r.ok && savedEngine !== 'kokoro' && savedEngine !== 'browser') {
+        // Pre-recorded available and user hasn't overridden
+        engineRef.current = 'prerecorded';
+        window.setTimeout(() => { if (!cancelled) { setEngine('prerecorded'); setInfo(''); } }, 0);
+        startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 80);
+      } else if (savedEngine === 'kokoro' || !r.ok) {
+        // Try Kokoro
+        engineRef.current = 'loading';
+        window.setTimeout(() => { if (!cancelled) { setEngine('loading'); setInfo('Loading voice\u2026'); } }, 0);
+        if (_ko) {
           engineRef.current = 'kokoro';
-          setInfo('Ready');
-          startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 100);
+          window.setTimeout(() => { if (!cancelled) { setEngine('kokoro'); setInfo(''); } }, 0);
+          startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 50);
         } else {
-          setEngine('browser');
-          engineRef.current = 'browser';
-          setInfo('Ready (browser voice)');
-          startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 100);
+          initKokoro(pct => { if (!cancelled) setLoadPct(pct); }).then(model => {
+            if (cancelled) return;
+            if (model) {
+              engineRef.current = 'kokoro';
+              window.setTimeout(() => { if (!cancelled) { setEngine('kokoro'); setInfo(''); } }, 0);
+            } else {
+              engineRef.current = 'browser';
+              window.setTimeout(() => { if (!cancelled) setEngine('browser'); }, 0);
+            }
+            startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 100);
+          });
         }
+      } else {
+        // savedEngine === 'browser'
+        engineRef.current = 'browser';
+        window.setTimeout(() => { if (!cancelled) setEngine('browser'); }, 0);
+        startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 80);
+      }
+    }).catch(() => {
+      if (cancelled) return;
+      // No pre-recorded, fall to Kokoro
+      engineRef.current = 'loading';
+      window.setTimeout(() => { if (!cancelled) { setEngine('loading'); setInfo('Loading voice\u2026'); } }, 0);
+      initKokoro(pct => { if (!cancelled) setLoadPct(pct); }).then(model => {
+        if (cancelled) return;
+        engineRef.current = model ? 'kokoro' : 'browser';
+        window.setTimeout(() => { if (!cancelled) setEngine(model ? 'kokoro' : 'browser'); }, 0);
+        startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 100);
       });
+    });
+
     return cleanup;
-  }, [blocks, loadVoices, onActiveBlock, ttsStart, playFromIdx]);
+  }, [blocks, slug, loadVoices, onActiveBlock, ttsStart, playFromIdx]);
 
   if (!isOpen) return null;
 
-  const voiceLabel = engine === 'browser'
-    ? shortBrowserName(selectedVoice)
-    : (KOKORO_VOICES.find(v => v.id === kokoroVoice)?.label ?? 'Onyx');
+  // ── render ────────────────────────────────────────────────────────────────
 
-  const voiceMenuContent = engine === 'browser'
-    ? voices.map(voice => {
-        const badge = badgeForVoice(voice);
-        return (
-          <button
-            key={`${voice.name}-${voice.lang}`}
-            className={`tts-vopt${selectedVoice?.name === voice.name ? ' sel' : ''}`}
-            type="button"
-            onClick={() => {
-              voiceRef.current = voice;
-              setSelectedVoice(voice);
-              setVoiceMenuOpen(false);
-              storageSet('ttsVoice', voice.name);
-              if (playingRef.current && !pausedRef.current && synthRef.current) {
-                synthRef.current.cancel();
-                speakItem();
-              }
-            }}
-          >
-            <span>
-              {voice.name.length > 32 ? `${voice.name.slice(0, 30)}\u2026` : voice.name}{' '}
-              <span className="tts-vlang-code">{voice.lang}</span>
-            </span>
-            {badge && <span className="tts-vbadge">{badge}</span>}
-          </button>
-        );
-      })
-    : [
-        <div key="kokoro-hdr" className="tts-vlang tts-vlang-en">KOKORO VOICES</div>,
-        ...KOKORO_VOICES.map(v => (
-          <button
-            key={v.id}
-            className={`tts-vopt${kokoroVoice === v.id ? ' sel' : ''}`}
-            type="button"
-            onClick={() => {
-              kokoroVoiceRef.current = v.id;
-              setKokoroVoice(v.id);
-              setVoiceMenuOpen(false);
-              storageSet('kokoroVoice', v.id);
-            }}
-          >
-            <span>{v.label}{' '}<span className="tts-vlang-code">{v.tag}</span></span>
-          </button>
-        )),
-      ];
+  const infoText = engine === 'detecting'
+    ? 'Starting\u2026'
+    : engine === 'loading'
+      ? `Loading\u2026${loadPct > 0 ? ` ${loadPct}%` : ''}`
+      : info;
+
+  const voiceLabel = engine === 'prerecorded'
+    ? 'Onyx'
+    : engine === 'browser'
+      ? shortBrowserName(selectedVoice)
+      : (KOKORO_VOICES.find(v => v.id === kokoroVoice)?.label ?? 'Onyx');
+
+  const voiceBadge = engine === 'prerecorded'
+    ? 'Pre-rec'
+    : engine === 'kokoro'
+      ? 'Neural'
+      : engine === 'loading' || engine === 'detecting'
+        ? '\u2026'
+        : (badgeForVoice(selectedVoice!) ?? selectedVoice?.lang ?? '');
 
   return (
     <div className="tts-bar open">
       <div className="tts-prog" style={{ '--tts-w': `${progress}%` } as React.CSSProperties} />
-      <button className="tts-btn" onClick={ttsPrev} type="button">
-        {'\u23ee'}
-      </button>
+      <button className="tts-btn" onClick={ttsPrev} type="button">{'\u23ee'}</button>
       <button className={`tts-btn${playing && !paused ? ' active' : ''}`} onClick={ttsToggle} type="button">
         {playing && !paused ? '\u23f8' : '\u25b6'}
       </button>
-      <button className="tts-btn" onClick={ttsNext} type="button">
-        {'\u23ed'}
-      </button>
-      <button className="tts-btn" onClick={ttsStopFn} type="button">
-        {'\u25a0'}
-      </button>
-      <span className="tts-info">
-        {engine === 'loading'
-          ? `Loading\u2026${loadPct > 0 ? ` ${loadPct}%` : ''}`
-          : info}
-      </span>
+      <button className="tts-btn" onClick={ttsNext} type="button">{'\u23ed'}</button>
+      <button className="tts-btn" onClick={ttsStopFn} type="button">{'\u25a0'}</button>
+      <span className="tts-info">{infoText}</span>
       <button className="tts-speed" onClick={cycleSpeed} type="button">
         {speedLabels[speeds.indexOf(speed)] ?? '1\u00d7'}
       </button>
@@ -717,13 +848,83 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
       <div className="tts-vwrap">
         <button className="tts-vbtn" type="button" onClick={() => setVoiceMenuOpen(o => !o)}>
           {voiceLabel}
-          <span className="tts-vbadge">
-            {engine === 'kokoro' ? 'Neural' : engine === 'loading' ? 'Loading' : (badgeForVoice(selectedVoice!) ?? selectedVoice?.lang ?? '')}
-          </span>
+          <span className="tts-vbadge">{voiceBadge}</span>
         </button>
         {voiceMenuOpen && (
           <div className="tts-vmenu">
-            {voiceMenuContent}
+            <div className="tts-vmode-hdr">PLAYBACK MODE</div>
+            <button
+              className={`tts-vopt tts-vmode${engine === 'prerecorded' ? ' sel' : ''}`}
+              type="button"
+              onClick={() => switchEngine('prerecorded')}
+            >
+              <span>Pre-recorded</span>
+              <span className="tts-vbadge">Instant</span>
+            </button>
+            <button
+              className={`tts-vopt tts-vmode${engine === 'kokoro' || engine === 'loading' ? ' sel' : ''}`}
+              type="button"
+              onClick={() => switchEngine('kokoro')}
+            >
+              <span>Neural (Kokoro)</span>
+              <span className="tts-vbadge">Live</span>
+            </button>
+            <button
+              className={`tts-vopt tts-vmode${engine === 'browser' ? ' sel' : ''}`}
+              type="button"
+              onClick={() => switchEngine('browser')}
+            >
+              <span>Browser</span>
+              <span className="tts-vbadge">System</span>
+            </button>
+
+            {(engine === 'kokoro' || engine === 'loading') && (
+              <>
+                <div className="tts-vlang tts-vlang-en">KOKORO VOICES</div>
+                {KOKORO_VOICES.map(v => (
+                  <button
+                    key={v.id}
+                    className={`tts-vopt${kokoroVoice === v.id ? ' sel' : ''}`}
+                    type="button"
+                    onClick={() => {
+                      kokoroVoiceRef.current = v.id;
+                      setKokoroVoice(v.id);
+                      setVoiceMenuOpen(false);
+                      storageSet('kokoroVoice', v.id);
+                    }}
+                  >
+                    <span>{v.label}{' '}<span className="tts-vlang-code">{v.tag}</span></span>
+                  </button>
+                ))}
+              </>
+            )}
+
+            {engine === 'browser' && voices.map(voice => {
+              const badge = badgeForVoice(voice);
+              return (
+                <button
+                  key={`${voice.name}-${voice.lang}`}
+                  className={`tts-vopt${selectedVoice?.name === voice.name ? ' sel' : ''}`}
+                  type="button"
+                  onClick={() => {
+                    voiceRef.current = voice;
+                    setSelectedVoice(voice);
+                    setVoiceMenuOpen(false);
+                    storageSet('ttsVoice', voice.name);
+                    if (playingRef.current && !pausedRef.current && synthRef.current) {
+                      synthRef.current.cancel();
+                      speakItem();
+                    }
+                  }}
+                >
+                  <span>
+                    {voice.name.length > 32 ? `${voice.name.slice(0, 30)}\u2026` : voice.name}{' '}
+                    <span className="tts-vlang-code">{voice.lang}</span>
+                  </span>
+                  {badge && <span className="tts-vbadge">{badge}</span>}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
