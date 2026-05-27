@@ -42,9 +42,9 @@ export default function DocumentReader({ doc }: { doc: DocumentData }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
-  const [ndOn, setNdOn] = useState(getInitialNDMode);
-  const [fontSize, setFontSizeState] = useState(getInitialFontSize);
-  const [bookmarks, setBookmarks] = useState<Record<string, Bookmark>>(() => getInitialBookmarks(doc.slug));
+  const [ndOn, setNdOn] = useState(false);
+  const [fontSize, setFontSizeState] = useState(18);
+  const [bookmarks, setBookmarks] = useState<Record<string, Bookmark>>({}); 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchIndex, setSearchIndex] = useState(0);
   const [activeId, setActiveId] = useState(doc.toc[0]?.id ?? '');
@@ -61,6 +61,19 @@ export default function DocumentReader({ doc }: { doc: DocumentData }) {
     });
   }, [searchQuery, doc.blocks]);
   const effectiveSearchIndex = searchHits.length ? Math.min(searchIndex, searchHits.length - 1) : 0;
+
+  // Hydrate global settings from localStorage after mount (avoids SSR/client mismatch)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFontSizeState(getInitialFontSize());
+    setNdOn(getInitialNDMode());
+  }, []);
+
+  // Hydrate bookmarks whenever the document changes
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBookmarks(getInitialBookmarks(doc.slug));
+  }, [doc.slug]);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--fsz', `${fontSize}px`);
@@ -211,44 +224,12 @@ export default function DocumentReader({ doc }: { doc: DocumentData }) {
       <div className="wrap">
         <Sidebar toc={doc.toc} isOpen={sidebarOpen} activeId={activeId} docTitle={doc.title} />
         <main id="main">
-          <div style={{ textAlign: 'center', padding: '60px 0 40px' }}>
-            <h1
-              style={{
-                fontFamily: 'Cinzel,serif',
-                fontSize: 'clamp(36px,6vw,56px)',
-                color: 'var(--burg)',
-                fontWeight: 600,
-                letterSpacing: '.04em',
-                lineHeight: 1.1,
-                marginBottom: 16,
-              }}
-            >
-              {doc.title}
-            </h1>
+          <div className="doc-header">
+            <h1 className="doc-title">{doc.title}</h1>
             {doc.subtitle && (
-              <p
-                style={{
-                  fontFamily: "'EB Garamond',serif",
-                  fontSize: 'clamp(16px,2vw,22px)',
-                  color: 'var(--ink3)',
-                  fontStyle: 'italic',
-                  marginBottom: 8,
-                }}
-              >
-                {doc.subtitle}
-              </p>
+              <p className="doc-subtitle">{doc.subtitle}</p>
             )}
-            <p
-              style={{
-                fontFamily: "'DM Sans',sans-serif",
-                fontSize: 13,
-                color: 'var(--ink3)',
-                letterSpacing: '.1em',
-                marginTop: 12,
-              }}
-            >
-              {doc.author} · {doc.dateDisplay}
-            </p>
+            <p className="doc-meta">{doc.author} · {doc.dateDisplay}</p>
           </div>
           {doc.blocks.map((block) =>
             renderBlock(block, bookmarks, ttsActiveBlock, searchHits, toggleBookmark, ndOn),

@@ -17,70 +17,32 @@ export default function SettingsPanel({ isOpen, fontSize, onSetFontSize, ndOn, o
     <div className={`panel${isOpen ? ' open' : ''}`}>
       <div className="panel-label">Text Size</div>
       <div className="panel-row">
+        <button className="ibtn" onClick={() => onSetFontSize(16)} type="button">A−</button>
         <button
-          className="ibtn"
-          onClick={() => onSetFontSize(16)}
-          style={{ flex: 1, height: 34, fontSize: 13, border: '1px solid var(--rule)', borderRadius: 6 }}
-          type="button"
-        >
-          A−
-        </button>
-        <button
-          className="ibtn"
+          className={`ibtn${fontSize === 18 ? ' ibtn-active' : ''}`}
           onClick={() => onSetFontSize(18)}
-          style={{
-            flex: 1,
-            height: 34,
-            fontSize: fontSize === 18 ? 15 : 13,
-            border: '1px solid var(--rule)',
-            borderRadius: 6,
-          }}
           type="button"
         >
           A
         </button>
-        <button
-          className="ibtn"
-          onClick={() => onSetFontSize(21)}
-          style={{ flex: 1, height: 34, fontSize: 13, border: '1px solid var(--rule)', borderRadius: 6 }}
-          type="button"
-        >
-          A+
-        </button>
+        <button className="ibtn" onClick={() => onSetFontSize(21)} type="button">A+</button>
       </div>
       <div className="panel-label">Reading Mode</div>
       <div className="panel-row">
         <button
-          className={`ibtn${ndOn ? ' nd-active' : ''}`}
+          className={`ibtn ibtn-sm${ndOn ? ' nd-active' : ''}`}
           onClick={onToggleND}
-          style={{ flex: 1, fontSize: 11, height: 34, border: '1px solid var(--rule)', borderRadius: 6 }}
           type="button"
           aria-pressed={ndOn}
         >
           Focus / ND
         </button>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--ink3)', marginBottom: 14, lineHeight: 1.4, fontStyle: 'italic' }}>
-        Bionic reading + sentence breaks
-      </div>
+      <div className="panel-hint">Bionic reading + sentence breaks</div>
       <div className="panel-label">Theme</div>
       <div className="panel-row">
-        <button
-          className="ibtn"
-          onClick={() => setTheme('light')}
-          style={{ flex: 1, height: 34, fontSize: 13, border: '1px solid var(--rule)', borderRadius: 6 }}
-          type="button"
-        >
-          Light
-        </button>
-        <button
-          className="ibtn"
-          onClick={() => setTheme('dark')}
-          style={{ flex: 1, height: 34, fontSize: 13, border: '1px solid var(--rule)', borderRadius: 6 }}
-          type="button"
-        >
-          Dark
-        </button>
+        <button className="ibtn" onClick={() => setTheme('light')} type="button">Light</button>
+        <button className="ibtn" onClick={() => setTheme('dark')} type="button">Dark</button>
       </div>
     </div>
   );
