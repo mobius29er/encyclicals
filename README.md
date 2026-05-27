@@ -1,6 +1,8 @@
 # Encyclicals
 
-A modular Next.js + TypeScript reader for Catholic encyclicals and doctrinal documents. The app uses the Next.js App Router with structured JSON document content and reusable reader components. It includes a static export for GitHub Pages while preserving the original `index.html` as an archive source file.
+Encyclicals is a modular Next.js + TypeScript reader for Catholic encyclicals and doctrinal documents.
+
+The app uses the Next.js App Router with structured JSON document content and reusable reader components. It includes a static export for GitHub Pages while preserving the original `index.html` as an archive source file.
 
 ## Features
 
