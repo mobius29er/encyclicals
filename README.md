@@ -1,78 +1,82 @@
 # Encyclicals
 
-A lightweight, static reader for **Magnifica Humanitas — Pope Leo XIV**. The site is built as a single HTML file and is published with GitHub Pages.
+Encyclicals is a modular Next.js + TypeScript reader for Catholic encyclicals and doctrinal documents.
 
-## What is in this repo?
+The app uses the Next.js App Router with structured JSON document content and reusable reader components. It includes a static export for GitHub Pages while preserving the original `index.html` as an archive source file.
 
-This repository currently contains a standalone web page (`index.html`) with the full reading experience, including:
+## Features
 
-- Responsive table of contents
-- Light and dark themes
-- Adjustable font size
-- Search with match navigation
-- Bookmarking for individual cards/paragraphs
-- Reading progress indicator and scroll restoration
-- Focus mode
-- Browser text-to-speech controls with voice selection
-
-## Live site
-
-If GitHub Pages is enabled for the repository, the site is deployed from the `main` branch by the workflow in `.github/workflows/deploy-pages.yml`.
+- Document catalog home page generated from `content/documents/index.json`.
+- Static document routes under `/documents/[slug]`.
+- Reader toolbar with table-of-contents navigation, search, text-to-speech controls, focus mode, bookmarks, font sizing, and light/dark themes.
+- Browser storage for reading position, bookmarks, font size, focus mode, and theme preferences.
+- HTML and PDF extraction scripts for turning source documents into editable JSON content.
 
 ## Project structure
 
 ```text
 .
-├── .github/workflows/deploy-pages.yml  # GitHub Pages deployment workflow
-├── index.html                          # Static site: markup, styles, and JavaScript
-├── LICENSE                             # MIT license
-└── README.md                           # Project documentation
+├── app/                         # Next.js App Router pages and global styles
+├── components/                  # Reader UI components
+├── content/documents/           # Extracted JSON content catalog and documents
+├── lib/                         # Browser storage and focus-mode helpers
+├── scripts/                     # HTML/PDF ingestion utilities
+├── types/                       # Shared document types
+├── LICENSE                      # MIT license
+├── index.html                   # Archived single-file source
+└── .github/workflows/           # GitHub Pages deployment workflow
 ```
 
 ## Getting started
 
-No build step or package installation is required.
-
-### Run locally
-
-Open `index.html` directly in a browser, or serve the repository with any static file server:
+Install dependencies, regenerate JSON from the archived HTML source if needed, and start the development server:
 
 ```bash
-python3 -m http.server 8000
+npm install
+npm run extract:html
+npm run dev
 ```
 
-Then visit <http://localhost:8000>.
+Then open <http://localhost:3000>.
 
-## Development notes
+## Available scripts
 
-- Keep the site dependency-light: all app code currently lives in `index.html`.
-- The deployment workflow copies `index.html` into a generated `_site` directory and publishes that directory to GitHub Pages.
-- Browser storage is used for user preferences such as theme, font size, bookmarks, reading position, and text-to-speech voice.
-- Text-to-speech support depends on the visitor's browser and installed system voices.
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Start the Next.js development server. |
+| `npm run lint` | Run ESLint across the project. |
+| `npm run build` | Build the static export into `out/`. |
+| `npm run start` | Start a Next.js server for a built app. |
+| `npm run extract:html` | Parse `index.html` into structured JSON document content. |
 
-## Contributing
+## Build for GitHub Pages
 
-Contributions are welcome. Good first improvements include:
+```bash
+npm run build
+```
 
-- Accessibility fixes
-- Responsive layout improvements
-- Documentation updates
-- Content corrections
-- Small usability improvements for search, bookmarks, or text-to-speech
+The static export is written to `out/` and deployed by `.github/workflows/deploy-pages.yml`.
 
-Before opening a pull request:
+## Content workflows
 
-1. Confirm the page opens locally without console errors.
-2. Test the affected feature in at least one current desktop browser.
-3. Keep changes focused and describe the user-facing impact in the pull request.
+- The document catalog lives in `content/documents/index.json`.
+- Extracted document JSON files live in `content/documents/`.
+- `npm run extract:html` parses `index.html` into structured JSON.
+- `node scripts/extract-pdf.mjs <pdf> <slug> [options]` generates a draft JSON document from a PDF.
+- Review generated JSON before committing so titles, metadata, section breaks, and summaries are accurate.
 
-## Deployment
+## Validation
 
-Deployment is handled by GitHub Actions:
+Before submitting changes, run:
 
-1. A push to `main` or a manual workflow dispatch starts the Pages workflow.
-2. The workflow prepares `_site/index.html` from the repository's `index.html`.
-3. The generated `_site` directory is uploaded and deployed to GitHub Pages.
+```bash
+npm run lint
+npm run build
+```
+
+## Archive note
+
+The original `index.html` is intentionally kept in the repository as the source archive for the initial single-file version of the site.
 
 ## License
 
