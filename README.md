@@ -22,6 +22,7 @@ The app uses the Next.js App Router with structured JSON document content and re
 ├── lib/                         # Browser storage and focus-mode helpers
 ├── scripts/                     # HTML/PDF ingestion utilities
 ├── types/                       # Shared document types
+├── LICENSE                      # MIT license
 ├── index.html                   # Archived single-file source
 └── .github/workflows/           # GitHub Pages deployment workflow
 ```
@@ -76,3 +77,7 @@ npm run build
 ## Archive note
 
 The original `index.html` is intentionally kept in the repository as the source archive for the initial single-file version of the site.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
