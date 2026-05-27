@@ -12,7 +12,7 @@ This repository currently contains a standalone web page (`index.html`) with the
 - Search with match navigation
 - Bookmarking for individual cards/paragraphs
 - Reading progress indicator and scroll restoration
-- Focus/ND reading mode
+- Focus/No Distraction reading mode
 - Browser text-to-speech controls with voice selection
 
 ## Live site
