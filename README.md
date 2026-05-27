@@ -25,6 +25,7 @@ If GitHub Pages is enabled for the repository, the site is deployed from the `ma
 .
 ├── .github/workflows/deploy-pages.yml  # GitHub Pages deployment workflow
 ├── index.html                          # Static site: markup, styles, and JavaScript
+├── LICENSE                             # MIT license
 └── README.md                           # Project documentation
 ```
 
@@ -75,4 +76,4 @@ Deployment is handled by GitHub Actions:
 
 ## License
 
-No license file is currently included in this repository. Until a license is added, please open an issue before reusing or redistributing the contents.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
