@@ -61,10 +61,10 @@ const STYLE_PROFILES: Record<TtsStyle, StyleProfile> = {
 };
 
 const KOKORO_STYLE_PAUSE: Record<TtsStyle, number> = {
-  original:   120,
-  balanced:   200,
-  expressive: 300,
-  dramatic:   460,
+  original:    80,
+  balanced:   120,
+  expressive: 160,
+  dramatic:   250,
 };
 
 let _ko: KokoroEngine | null = null;
@@ -388,17 +388,27 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
       const el = document.getElementById(block.id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       const sentences = splitSentences(text);
+      // Lookahead buffer: pre-generate the next sentence while the current one plays.
+      // This hides inference latency behind audio playback, eliminating gaps.
+      type GenResult = RawAudio | null;
+      let nextPromise: Promise<GenResult> = sentences.length > 0
+        ? tts.generate(sentences[0], { voice: kokoroVoiceRef.current, speed: speedRef.current })
+            .then(r => r as GenResult).catch(() => null as GenResult)
+        : Promise.resolve(null);
       for (let si = 0; si < sentences.length; si++) {
         if (!playingRef.current || sessionRef.current !== session) return;
-        let rawAudio: RawAudio;
-        try {
-          rawAudio = await tts.generate(sentences[si], {
-            voice: kokoroVoiceRef.current,
-            speed: speedRef.current,
-          });
-        } catch {
-          continue;
+        const rawAudio = await nextPromise;
+        // Start generating next sentence immediately (runs during playback below)
+        if (si + 1 < sentences.length) {
+          const nextText = sentences[si + 1];
+          const voiceSnap = kokoroVoiceRef.current;
+          const speedSnap = speedRef.current;
+          nextPromise = tts.generate(nextText, { voice: voiceSnap, speed: speedSnap })
+            .then(r => r as GenResult).catch(() => null as GenResult);
+        } else {
+          nextPromise = Promise.resolve(null);
         }
+        if (!rawAudio) continue;
         if (!playingRef.current || sessionRef.current !== session) return;
         await playAudio(ctx, rawAudio, audioSrcRef);
         if (
@@ -412,7 +422,7 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
       }
       idx++;
       if (playingRef.current && sessionRef.current === session && idx < blocks.length && ctx.state === 'running') {
-        await sleep(650);
+        await sleep(200);
       }
     }
     if (sessionRef.current === session && playingRef.current) {
@@ -698,10 +708,10 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
           ? `Loading\u2026${loadPct > 0 ? ` ${loadPct}%` : ''}`
           : info}
       </span>
-      <button className="tts-speed tts-btn" onClick={cycleSpeed} type="button">
+      <button className="tts-speed" onClick={cycleSpeed} type="button">
         {speedLabels[speeds.indexOf(speed)] ?? '1\u00d7'}
       </button>
-      <button className="tts-style tts-btn" onClick={cycleStyle} type="button">
+      <button className="tts-style" onClick={cycleStyle} type="button">
         {STYLE_PROFILES[style].label}
       </button>
       <div className="tts-vwrap">
