@@ -55,7 +55,7 @@ Then open <http://localhost:3000>.
 npm run build
 ```
 
-The static export is written to `out/` and deployed by `.github/workflows/deploy-pages.yml`.
+The static export is written to `out/` and deployed by `.github/workflows/deploy-pages.yml`. Production builds use the `/encyclicals` base path for GitHub Pages.
 
 ## Content workflows
 
