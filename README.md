@@ -1,78 +1,44 @@
 # Encyclicals
 
-A lightweight, static reader for **Magnifica Humanitas — Pope Leo XIV**. The site is built as a single HTML file and is published with GitHub Pages.
+A modular Next.js + TypeScript reader for Catholic encyclicals and doctrinal documents, with the original `index.html` preserved as an archive source file.
 
-## What is in this repo?
-
-This repository currently contains a standalone web page (`index.html`) with the full reading experience, including:
-
-- Responsive table of contents
-- Light and dark themes
-- Adjustable font size
-- Search with match navigation
-- Bookmarking for individual cards/paragraphs
-- Reading progress indicator and scroll restoration
-- Focus mode
-- Browser text-to-speech controls with voice selection
-
-## Live site
-
-If GitHub Pages is enabled for the repository, the site is deployed from the `main` branch by the workflow in `.github/workflows/deploy-pages.yml`.
-
-## Project structure
+## Current structure
 
 ```text
 .
-├── .github/workflows/deploy-pages.yml  # GitHub Pages deployment workflow
-├── index.html                          # Static site: markup, styles, and JavaScript
-└── README.md                           # Project documentation
+├── app/                         # Next.js App Router pages and global styles
+├── components/                  # Reader UI components
+├── content/documents/           # Extracted JSON content catalog and documents
+├── lib/                         # Browser storage and focus-mode helpers
+├── scripts/                     # HTML/PDF ingestion utilities
+├── types/                       # Shared document types
+├── index.html                   # Archived single-file source
+└── .github/workflows/           # GitHub Pages deployment workflow
 ```
 
 ## Getting started
 
-No build step or package installation is required.
-
-### Run locally
-
-Open `index.html` directly in a browser, or serve the repository with any static file server:
-
 ```bash
-python3 -m http.server 8000
+npm install
+npm run extract:html
+npm run dev
 ```
 
-Then visit <http://localhost:8000>.
+Then open <http://localhost:3000>.
 
-## Development notes
+## Build for GitHub Pages
 
-- Keep the site dependency-light: all app code currently lives in `index.html`.
-- The deployment workflow copies `index.html` into a generated `_site` directory and publishes that directory to GitHub Pages.
-- Browser storage is used for user preferences such as theme, font size, bookmarks, reading position, and text-to-speech voice.
-- Text-to-speech support depends on the visitor's browser and installed system voices.
+```bash
+npm run build
+```
 
-## Contributing
+The static export is written to `out/` and deployed by `.github/workflows/deploy-pages.yml`.
 
-Contributions are welcome. Good first improvements include:
+## Content workflows
 
-- Accessibility fixes
-- Responsive layout improvements
-- Documentation updates
-- Content corrections
-- Small usability improvements for search, bookmarks, or text-to-speech
+- `npm run extract:html` parses `index.html` into structured JSON.
+- `node scripts/extract-pdf.mjs <pdf> <slug> [options]` generates a draft JSON document from a PDF.
 
-Before opening a pull request:
+## Archive note
 
-1. Confirm the page opens locally without console errors.
-2. Test the affected feature in at least one current desktop browser.
-3. Keep changes focused and describe the user-facing impact in the pull request.
-
-## Deployment
-
-Deployment is handled by GitHub Actions:
-
-1. A push to `main` or a manual workflow dispatch starts the Pages workflow.
-2. The workflow prepares `_site/index.html` from the repository's `index.html`.
-3. The generated `_site` directory is uploaded and deployed to GitHub Pages.
-
-## License
-
-No license file is currently included in this repository. Until a license is added, please open an issue before reusing or redistributing the contents.
+The original `index.html` is intentionally kept in the repository as the source archive for the initial single-file version of the site.
