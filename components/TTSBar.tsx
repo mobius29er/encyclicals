@@ -692,16 +692,16 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
     <div className="tts-bar open">
       <div className="tts-prog" style={{ '--tts-w': `${progress}%` } as React.CSSProperties} />
       <button className="tts-btn" onClick={ttsPrev} type="button">
-        \u23ee
+        {'\u23ee'}
       </button>
       <button className={`tts-btn${playing && !paused ? ' active' : ''}`} onClick={ttsToggle} type="button">
         {playing && !paused ? '\u23f8' : '\u25b6'}
       </button>
       <button className="tts-btn" onClick={ttsNext} type="button">
-        \u23ed
+        {'\u23ed'}
       </button>
       <button className="tts-btn" onClick={ttsStopFn} type="button">
-        \u25a0
+        {'\u25a0'}
       </button>
       <span className="tts-info">
         {engine === 'loading'
