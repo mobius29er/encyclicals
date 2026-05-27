@@ -136,7 +136,6 @@ function buildASS(timeline, docTitle, docAuthor) {
   };
 
   const cGold    = assColor(GOLD);
-  const cCream   = assColor(CREAM);
   const cSubt    = assColor(SUBTITLE);
   const cBlack   = '&H00000000';
   const cShadow  = assAlpha('000000', 0.7);
@@ -286,10 +285,7 @@ for (const docMeta of docs) {
   // ── 3. Concatenate audio via ffmpeg concat ──────────────────────────────
   console.log('  Concatenating audio…');
   const concatListPath = join(tmpDir, `${slug}-concat.txt`);
-  const concatLines = timeline.flatMap(({ opusPath, dur }) => {
-    // Each entry: file path + duration (for accurate silence insertion)
-    return [`file '${opusPath}'`];
-  });
+  const concatLines = timeline.map(({ opusPath }) => `file '${opusPath}'`);
   writeFileSync(concatListPath, concatLines.join('\n') + '\n');
 
   const concatAacPath = join(tmpDir, `${slug}-audio.aac`);
@@ -313,12 +309,7 @@ for (const docMeta of docs) {
   console.log('  Compositing video (this may take several minutes)…');
   if (existsSync(outMp4)) unlinkSync(outMp4);
 
-  // Background: subtle radial gradient via ffmpeg geq filter
-  // lavfi color source → overlay ASS subtitles
-  const bgFilter = `color=c=#${BG}:s=${VIDEO_W}x${VIDEO_H}:r=24[bg]`;
-  const assFilter = `[bg]ass='${assPath}'[v]`;
-  const vf = `${bgFilter};${assFilter}`;
-
+  // Background lavfi color source → burn ASS subtitles
   const videoResult = run(FFMPEG, [
     '-y',
     '-f', 'lavfi', '-i', `color=c=#${BG}:s=${VIDEO_W}x${VIDEO_H}:r=24`,
