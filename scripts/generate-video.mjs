@@ -37,7 +37,6 @@ const VIDEO_H = 1080;
 // Palette — matches the app's dark-reader theme
 const BG       = '0d0905';   // near-black parchment
 const GOLD     = 'c8a45a';   // heading gold
-const CREAM    = 'e8dbbf';   // body text
 const SUBTITLE = 'd4c5a0';   // paragraph text
 const DIM      = '706050';   // secondary
 
