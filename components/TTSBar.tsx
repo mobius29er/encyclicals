@@ -1,5 +1,13 @@
 'use client';
 
+/**
+ * TTSBar - Text-to-Speech playback bar
+ * Primary engine : Kokoro TTS (Apache 2.0) - onnx-community/Kokoro-82M-v1.0-ONNX
+ *   All inference runs in the user's browser via WebAssembly.
+ *   No API keys, no server costs. The ~80 MB model is cached after first load.
+ * Fallback engine: Web Speech API (system voices), used if Kokoro fails to load.
+ */
+
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { storageGet, storageSet } from '@/lib/storage';
 import type { DocumentBlock } from '@/types/document';
@@ -11,7 +19,28 @@ interface TTSBarProps {
   onActiveBlock: (id: string | null) => void;
 }
 
+type Engine   = 'loading' | 'kokoro' | 'browser';
 type TtsStyle = 'original' | 'balanced' | 'expressive' | 'dramatic';
+
+interface RawAudio { audio: Float32Array; sampling_rate: number }
+interface KokoroEngine {
+  generate(text: string, opts: { voice: string; speed: number }): Promise<RawAudio>;
+}
+
+const KOKORO_VOICES = [
+  { id: 'am_onyx',    label: 'Onyx',    tag: '\u2642 American' },
+  { id: 'am_santa',   label: 'Santa',   tag: '\u2642 American' },
+  { id: 'am_puck',    label: 'Puck',    tag: '\u2642 American' },
+  { id: 'am_echo',    label: 'Echo',    tag: '\u2642 American' },
+  { id: 'am_michael', label: 'Michael', tag: '\u2642 American' },
+  { id: 'bm_george',  label: 'George',  tag: '\u2642 British'  },
+  { id: 'bm_lewis',   label: 'Lewis',   tag: '\u2642 British'  },
+  { id: 'af_heart',   label: 'Heart',   tag: '\u2640 American' },
+  { id: 'af_bella',   label: 'Bella',   tag: '\u2640 American' },
+  { id: 'af_nova',    label: 'Nova',    tag: '\u2640 American' },
+] as const;
+type KokoroVoiceId = typeof KOKORO_VOICES[number]['id'];
+const DEFAULT_KOKORO_VOICE: KokoroVoiceId = 'am_onyx';
 
 const STYLE_ORDER: TtsStyle[] = ['original', 'balanced', 'expressive', 'dramatic'];
 
@@ -31,6 +60,62 @@ const STYLE_PROFILES: Record<TtsStyle, StyleProfile> = {
   dramatic:   { label: 'Dramatic',   rateJitter: 0.05, pitchJitter: 0.02,  volumeBase: 0.78, volumeJitter: 0.03, pauseMultiplier: 1.4  },
 };
 
+const KOKORO_STYLE_PAUSE: Record<TtsStyle, number> = {
+  original:   120,
+  balanced:   200,
+  expressive: 300,
+  dramatic:   460,
+};
+
+let _ko: KokoroEngine | null = null;
+let _koPending: Promise<KokoroEngine | null> | null = null;
+
+async function initKokoro(onPct: (n: number) => void): Promise<KokoroEngine | null> {
+  if (_ko) return _ko;
+  if (_koPending) return _koPending;
+  _koPending = (async () => {
+    try {
+      const { KokoroTTS } = await import('kokoro-js');
+      const model = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
+        dtype: 'q8',
+        device: 'wasm',
+        progress_callback: (info: { status: string; progress?: number }) => {
+          if (info.status === 'progress') onPct(Math.round(info.progress ?? 0));
+        },
+      });
+      _ko = model as unknown as KokoroEngine;
+      return _ko;
+    } catch {
+      _koPending = null;
+      return null;
+    }
+  })();
+  return _koPending;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise(r => window.setTimeout(r, ms));
+
+function playAudio(
+  ctx: AudioContext,
+  raw: RawAudio,
+  srcRef: React.MutableRefObject<AudioBufferSourceNode | null>,
+): Promise<void> {
+  return new Promise(resolve => {
+    try {
+      const buf = ctx.createBuffer(1, raw.audio.length, raw.sampling_rate);
+      buf.getChannelData(0).set(raw.audio);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.onended = () => { srcRef.current = null; resolve(); };
+      src.start(0);
+      srcRef.current = src;
+    } catch {
+      resolve();
+    }
+  });
+}
+
 function scoreVoice(v: SpeechSynthesisVoice): number {
   let s = 0;
   const n = v.name.toLowerCase();
@@ -45,6 +130,20 @@ function scoreVoice(v: SpeechSynthesisVoice): number {
   if (n.includes('microsoft') && n.includes('online')) s += 60;
   if (!v.localService) s += 20;
   return s;
+}
+
+function badgeForVoice(v: SpeechSynthesisVoice): string | null {
+  const s = scoreVoice(v);
+  if (s >= 300) return 'Premium';
+  if (s >= 280) return 'Enhanced';
+  if (s >= 250) return 'Good';
+  return null;
+}
+
+function shortBrowserName(v: SpeechSynthesisVoice | null): string {
+  if (!v) return 'Voice';
+  const c = v.name.replace(/\s*\([^)]*\)\s*$/, '');
+  return c.length > 14 ? `${c.slice(0, 12)}\u2026` : c;
 }
 
 function getReadText(block: DocumentBlock): string {
@@ -62,12 +161,12 @@ function getReadText(block: DocumentBlock): string {
 }
 
 function getTTSLabel(block: DocumentBlock): string {
-  if (block.type === 'paragraph') return `§${block.number}`;
+  if (block.type === 'paragraph') return `\u00a7${block.number}`;
   if (block.type === 'chapter-header') return block.title;
   if (block.type === 'sec-head' || block.type === 'sub-head' || block.type === 'signature') {
     return block.html.replace(/<[^>]+>/g, '').trim().slice(0, 60);
   }
-  return 'Reading…';
+  return 'Reading\u2026';
 }
 
 function clamp(n: number, min: number, max: number): number {
@@ -80,7 +179,6 @@ function normalizeForSpeech(text: string): string {
     .replace(/<[^>]+>/g, ' ')
     .replace(/\(cf\.[^)]{0,80}\)/gi, '')
     .replace(/\(see [A-Z][^)]{0,60}\)/g, '')
-    // orphaned footnote/page number clusters e.g. "301. 223 82" or "139-141. 61"
     .replace(/\b\d{2,4}[.\-]\s*\d{2,4}[.\-]?\s*\d{0,3}\b/g, ' ')
     .replace(/\b\d{3,4}\.\s(?=[A-Z])/g, '')
     .replace(/\s+/g, ' ')
@@ -93,23 +191,20 @@ function splitSentences(text: string): string[] {
   const normalized = normalizeForSpeech(text);
   const parts = normalized.match(/[^.!?]*[.!?]+[\u201d\u2019)]?\s*|[^.!?]+$/g);
   if (!parts) return [text];
-
-  // Merge very short fragments with the previous sentence so the rhythm is less choppy.
-  const merged = parts.map((s) => s.trim()).filter((s) => s.length > 0).reduce<string[]>((acc, part) => {
-    if (!acc.length) {
-      acc.push(part);
+  const merged = parts
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+    .reduce<string[]>((acc, part) => {
+      if (!acc.length) { acc.push(part); return acc; }
+      const isTooShort = part.length < 22;
+      const isContinuation = /^[,;:\-)]/.test(part);
+      if (isTooShort || isContinuation) {
+        acc[acc.length - 1] = `${acc[acc.length - 1]} ${part}`;
+      } else {
+        acc.push(part);
+      }
       return acc;
-    }
-    const isTooShort = part.length < 22;
-    const isContinuation = /^[,;:\-)]/.test(part);
-    if (isTooShort || isContinuation) {
-      acc[acc.length - 1] = `${acc[acc.length - 1]} ${part}`;
-    } else {
-      acc.push(part);
-    }
-    return acc;
-  }, []);
-
+    }, []);
   return merged.length ? merged : [normalized];
 }
 
@@ -125,48 +220,26 @@ function prosodyForSentence(
   profile: StyleProfile,
   sentIdx: number,
 ): { rate: number; pitch: number; volume: number; pauseMs: number } {
-  // Original: flat delivery, no prosody variation
   if (profile.rateJitter === 0) {
     return { rate: baseRate, pitch: 1.0, volume: profile.volumeBase, pauseMs: 180 };
   }
-
   const h = hashText(text);
   const words = text.trim().split(/\s+/).filter(Boolean).length;
-  const endsQuestion = /\?\s*[\u201d\u2019)]?$/.test(text);
-  const endsExclaim = /!\s*[\u201d\u2019)]?$/.test(text);
+  const endsQuestion   = /\?\s*[\u201d\u2019)]?$/.test(text);
+  const endsExclaim    = /!\s*[\u201d\u2019)]?$/.test(text);
   const hasCommaClause = /[,;:]/.test(text);
-
-  // Deterministic per-sentence noise across three independent hash channels
   const rateNoise  = ((h          % 1000) / 1000 - 0.5) * 2 * profile.rateJitter;
   const pitchNoise = (((h >>>  8) % 1000) / 1000 - 0.5) * 2 * profile.pitchJitter;
   const volNoise   = (((h >>> 16) % 1000) / 1000 - 0.5) * 2 * profile.volumeJitter;
-
   let rate    = baseRate + rateNoise;
   let pitch   = 1.0      + pitchNoise;
   const volume  = profile.volumeBase + volNoise;
   let pauseMs = 170 * profile.pauseMultiplier;
-
-  // Only gently slow very long sentences — no speedup on short ones
-  if (words >= 25) rate -= 0.04;
-
-  if (hasCommaClause) {
-    rate    -= 0.03;
-    pauseMs += 40 * profile.pauseMultiplier;
-  }
-  if (endsQuestion) {
-    pitch   += 0.03;
-    pauseMs += 20 * profile.pauseMultiplier;
-  }
-  if (endsExclaim) {
-    pitch   += 0.02;
-    rate    += 0.01;
-    pauseMs += 10 * profile.pauseMultiplier;
-  }
-  // Opening sentence of each block: slightly deliberate pace
-  if (sentIdx === 0) {
-    rate -= 0.02;
-  }
-
+  if (words >= 25)     { rate -= 0.04; }
+  if (hasCommaClause)  { rate -= 0.03; pauseMs += 40 * profile.pauseMultiplier; }
+  if (endsQuestion)    { pitch += 0.03; pauseMs += 20 * profile.pauseMultiplier; }
+  if (endsExclaim)     { pitch += 0.02; rate += 0.01; pauseMs += 10 * profile.pauseMultiplier; }
+  if (sentIdx === 0)   { rate -= 0.02; }
   return {
     rate:    clamp(rate,    0.75, 1.45),
     pitch:   clamp(pitch,   0.96, 1.07),
@@ -175,42 +248,45 @@ function prosodyForSentence(
   };
 }
 
-function shortName(voice: SpeechSynthesisVoice | null): string {
-  if (!voice) return 'Voice';
-  const clean = voice.name.replace(/\s*\([^)]*\)\s*$/, '');
-  return clean.length > 14 ? `${clean.slice(0, 12)}…` : clean;
-}
-
-function badgeForVoice(voice: SpeechSynthesisVoice): string | null {
-  const s = scoreVoice(voice);
-  if (s >= 300) return 'Premium';
-  if (s >= 280) return 'Enhanced';
-  if (s >= 250) return 'Good';
-  return null;
-}
-
 export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBarProps) {
-  const synthRef = useRef<SpeechSynthesis | null>(null);
+
+  const [engine, setEngine] = useState<Engine>(() => (_ko ? 'kokoro' : 'loading'));
+  const engineRef = useRef<Engine>(_ko ? 'kokoro' : 'loading');
+  const [loadPct, setLoadPct] = useState(0);
+
+  const [kokoroVoice, setKokoroVoice] = useState<string>(
+    () => storageGet('kokoroVoice') || DEFAULT_KOKORO_VOICE,
+  );
+  const kokoroVoiceRef = useRef<string>(storageGet('kokoroVoice') || DEFAULT_KOKORO_VOICE);
+
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioSrcRef = useRef<AudioBufferSourceNode | null>(null);
+
+  const synthRef    = useRef<SpeechSynthesis | null>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
-  const [playing, setPlaying] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [speed, setSpeed] = useState(1);
-  const [info, setInfo] = useState('Ready');
+  const voiceRef    = useRef<SpeechSynthesisVoice | null>(null);
+  const sentQRef    = useRef<string[]>([]);
+  const sentIRef    = useRef(0);
+
+  const [playing,  setPlaying]  = useState(false);
+  const [paused,   setPaused]   = useState(false);
+  const [speed,    setSpeed]    = useState(1);
+  const [info,     setInfo]     = useState(() => (_ko ? 'Ready' : 'Loading voice\u2026'));
   const [progress, setProgress] = useState(0);
   const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
-  const idxRef = useRef(-1);
+
+  const idxRef     = useRef(-1);
   const playingRef = useRef(false);
-  const pausedRef = useRef(false);
-  const speedRef = useRef(1);
-  const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
-  const sentQRef = useRef<string[]>([]);
-  const sentIRef = useRef(0);
+  const pausedRef  = useRef(false);
+  const speedRef   = useRef(1);
+  const sessionRef = useRef(0);
+
   const [style, setStyle] = useState<TtsStyle>(() => {
     const saved = storageGet('ttsStyle') as TtsStyle;
     return STYLE_ORDER.includes(saved) ? saved : 'balanced';
   });
-  const styleRef = useRef<TtsStyle>(style);
+  const styleRef = useRef<TtsStyle>('balanced');
 
   const loadVoices = useCallback(() => {
     const synth = synthRef.current;
@@ -220,26 +296,10 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
     const sorted = all.slice().sort((a, b) => scoreVoice(b) - scoreVoice(a));
     setVoices(sorted);
     const storedName = storageGet('ttsVoice');
-    const picked = voiceRef.current ?? sorted.find((voice) => voice.name === storedName) ?? sorted[0];
+    const picked = voiceRef.current ?? sorted.find(v => v.name === storedName) ?? sorted[0];
     voiceRef.current = picked;
     setSelectedVoice(picked);
   }, []);
-
-  const ttsStopFn = useCallback(() => {
-    const synth = synthRef.current;
-    if (synth) synth.cancel();
-    playingRef.current = false;
-    pausedRef.current = false;
-    idxRef.current = -1;
-    sentQRef.current = [];
-    sentIRef.current = 0;
-    setPlaying(false);
-    setPaused(false);
-    setInfo('Stopped');
-    setProgress(0);
-    onActiveBlock(null);
-    onClose();
-  }, [onActiveBlock, onClose]);
 
   function speakNextSentence() {
     const synth = synthRef.current;
@@ -251,12 +311,11 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
       }
       return;
     }
-
     const text = sentQRef.current[sentIRef.current];
     const utterance = new SpeechSynthesisUtterance(text);
     const prosody = prosodyForSentence(text, speedRef.current, STYLE_PROFILES[styleRef.current], sentIRef.current);
-    utterance.rate = prosody.rate;
-    utterance.pitch = prosody.pitch;
+    utterance.rate   = prosody.rate;
+    utterance.pitch  = prosody.pitch;
     utterance.volume = prosody.volume;
     if (voiceRef.current) utterance.voice = voiceRef.current;
     utterance.lang = voiceRef.current?.lang || 'en-US';
@@ -266,8 +325,8 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
         window.setTimeout(speakNextSentence, prosody.pauseMs);
       }
     };
-    utterance.onerror = (event) => {
-      if (event.error !== 'canceled') {
+    utterance.onerror = (ev) => {
+      if (ev.error !== 'canceled') {
         sentIRef.current += 1;
         if (playingRef.current) window.setTimeout(speakNextSentence, 100);
       }
@@ -279,84 +338,172 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
     const synth = synthRef.current;
     if (!synth) return;
     const idx = idxRef.current;
-    if (idx < 0 || idx >= blocks.length) {
-      ttsStopFn();
-      return;
-    }
+    if (idx < 0 || idx >= blocks.length) { ttsStopFn(); return; }
     const block = blocks[idx];
     const text = getReadText(block);
-    if (!text || text.length < 2) {
-      idxRef.current += 1;
-      window.setTimeout(speakItem, 0);
-      return;
-    }
-
+    if (!text || text.length < 2) { idxRef.current += 1; window.setTimeout(speakItem, 0); return; }
     onActiveBlock(block.id);
     setInfo(getTTSLabel(block));
     setProgress(((idx + 1) / blocks.length) * 100);
     const el = document.getElementById(block.id);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
     synth.cancel();
-    const isHeader = block.type !== 'paragraph';
-    if (isHeader) {
+    if (block.type !== 'paragraph') {
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = clamp(speedRef.current * 0.9, 0.75, 1.25);
-      utterance.pitch = 0.95;
+      utterance.rate   = clamp(speedRef.current * 0.9, 0.75, 1.25);
+      utterance.pitch  = 0.95;
       utterance.volume = clamp(STYLE_PROFILES[styleRef.current].volumeBase + 0.03, 0.60, 0.84);
       if (voiceRef.current) utterance.voice = voiceRef.current;
       utterance.lang = voiceRef.current?.lang || 'en-US';
-      utterance.onend = () => {
-        if (playingRef.current && !pausedRef.current) {
-          idxRef.current += 1;
-          window.setTimeout(speakItem, 600);
-        }
-      };
-      utterance.onerror = (event) => {
-        if (event.error !== 'canceled' && playingRef.current) {
-          idxRef.current += 1;
-          window.setTimeout(speakItem, 200);
-        }
-      };
+      utterance.onend  = () => { if (playingRef.current && !pausedRef.current) { idxRef.current += 1; window.setTimeout(speakItem, 600); } };
+      utterance.onerror = (ev) => { if (ev.error !== 'canceled' && playingRef.current) { idxRef.current += 1; window.setTimeout(speakItem, 200); } };
       synth.speak(utterance);
     } else {
       sentQRef.current = splitSentences(text);
       sentIRef.current = 0;
       speakNextSentence();
     }
-
     setPlaying(true);
     setPaused(false);
     playingRef.current = true;
-    pausedRef.current = false;
+    pausedRef.current  = false;
   }
 
-  const ttsStart = useCallback(() => {
-    const synth = synthRef.current;
-    if (!synth) {
-      setInfo('TTS unavailable');
-      return;
+  async function kokoroLoop(startIdx: number, session: number) {
+    const tts = _ko;
+    if (!tts) return;
+    const AudioCtorFallback = (window as unknown as Record<string, typeof AudioContext>).webkitAudioContext;
+    const AudioCtorToUse = window.AudioContext || AudioCtorFallback;
+    const ctx = new AudioCtorToUse();
+    audioCtxRef.current = ctx;
+    let idx = startIdx;
+    while (idx < blocks.length && playingRef.current && sessionRef.current === session) {
+      const block = blocks[idx];
+      idxRef.current = idx;
+      const text = getReadText(block);
+      if (!text || text.length < 2) { idx++; continue; }
+      onActiveBlock(block.id);
+      setInfo(getTTSLabel(block));
+      setProgress(((idx + 1) / blocks.length) * 100);
+      const el = document.getElementById(block.id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const sentences = splitSentences(text);
+      for (let si = 0; si < sentences.length; si++) {
+        if (!playingRef.current || sessionRef.current !== session) return;
+        let rawAudio: RawAudio;
+        try {
+          rawAudio = await tts.generate(sentences[si], {
+            voice: kokoroVoiceRef.current,
+            speed: speedRef.current,
+          });
+        } catch {
+          continue;
+        }
+        if (!playingRef.current || sessionRef.current !== session) return;
+        await playAudio(ctx, rawAudio, audioSrcRef);
+        if (
+          si < sentences.length - 1 &&
+          playingRef.current &&
+          sessionRef.current === session &&
+          ctx.state === 'running'
+        ) {
+          await sleep(KOKORO_STYLE_PAUSE[styleRef.current]);
+        }
+      }
+      idx++;
+      if (playingRef.current && sessionRef.current === session && idx < blocks.length && ctx.state === 'running') {
+        await sleep(650);
+      }
     }
-    loadVoices();
+    if (sessionRef.current === session && playingRef.current) {
+      ttsStopFn();
+    }
+  }
+
+  const ttsStopFn = useCallback(() => {
+    if (audioSrcRef.current) {
+      try { audioSrcRef.current.stop(); } catch { /* already stopped */ }
+      audioSrcRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      try { audioCtxRef.current.close(); } catch { /* already closed */ }
+      audioCtxRef.current = null;
+    }
+    if (synthRef.current) synthRef.current.cancel();
+    playingRef.current = false;
+    pausedRef.current  = false;
+    idxRef.current     = -1;
+    sentQRef.current   = [];
+    sentIRef.current   = 0;
+    setPlaying(false);
+    setPaused(false);
+    setInfo('Stopped');
+    setProgress(0);
+    onActiveBlock(null);
+    onClose();
+  }, [onActiveBlock, onClose]);
+
+  const findStartIdx = useCallback(() => {
     const sy = window.scrollY + window.innerHeight / 3;
     let near = 0;
-    blocks.forEach((block, index) => {
+    blocks.forEach((block, i) => {
       const el = document.getElementById(block.id);
-      if (el && el.offsetTop <= sy && getReadText(block).length > 1) near = index;
+      if (el && el.offsetTop <= sy && getReadText(block).length > 1) near = i;
     });
-    idxRef.current = near;
-    speakItem();
+    return near;
+  }, [blocks]);
+
+  const playFromIdx = useCallback((idx: number) => {
+    if (engineRef.current === 'kokoro') {
+      if (audioSrcRef.current) { try { audioSrcRef.current.stop(); } catch {} audioSrcRef.current = null; }
+      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch {} audioCtxRef.current = null; }
+      const session = sessionRef.current + 1;
+      sessionRef.current = session;
+      idxRef.current  = idx;
+      playingRef.current = true;
+      pausedRef.current  = false;
+      setPlaying(true);
+      setPaused(false);
+      kokoroLoop(idx, session);
+    } else if (engineRef.current === 'browser') {
+      if (synthRef.current) synthRef.current.cancel();
+      pausedRef.current  = false;
+      sentQRef.current   = [];
+      sentIRef.current   = 0;
+      idxRef.current     = idx;
+      speakItem();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blocks, loadVoices]);
+  }, [blocks]);
+
+  const ttsStart = useCallback(() => {
+    if (engineRef.current === 'loading') { setInfo('Loading voice\u2026'); return; }
+    playFromIdx(findStartIdx());
+  }, [findStartIdx, playFromIdx]);
 
   const ttsToggle = useCallback(() => {
+    if (engineRef.current === 'loading') return;
+    if (engineRef.current === 'kokoro') {
+      if (!playingRef.current && !pausedRef.current) { ttsStart(); return; }
+      if (pausedRef.current) {
+        audioCtxRef.current?.resume();
+        pausedRef.current = false;
+        setPaused(false);
+        setPlaying(true);
+      } else {
+        audioCtxRef.current?.suspend();
+        pausedRef.current = true;
+        setPaused(true);
+      }
+      return;
+    }
     const synth = synthRef.current;
     if (!synth) return;
     if (!playingRef.current) {
-      if (idxRef.current < 0) ttsStart();
-      else if (pausedRef.current) {
+      if (idxRef.current < 0) { ttsStart(); return; }
+      if (pausedRef.current) {
         synth.resume();
-        pausedRef.current = false;
+        pausedRef.current  = false;
         playingRef.current = true;
         setPaused(false);
         setPlaying(true);
@@ -379,35 +526,21 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
   }, [ttsStart]);
 
   const ttsNext = useCallback(() => {
-    const synth = synthRef.current;
-    if (synth) synth.cancel();
-    pausedRef.current = false;
-    sentQRef.current = [];
-    sentIRef.current = 0;
-    idxRef.current = Math.min(idxRef.current + 1, blocks.length - 1);
-    speakItem();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blocks.length]);
+    playFromIdx(Math.min(idxRef.current + 1, blocks.length - 1));
+  }, [blocks.length, playFromIdx]);
 
   const ttsPrev = useCallback(() => {
-    const synth = synthRef.current;
-    if (synth) synth.cancel();
-    pausedRef.current = false;
-    sentQRef.current = [];
-    sentIRef.current = 0;
-    idxRef.current = Math.max(idxRef.current - 1, 0);
-    speakItem();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    playFromIdx(Math.max(idxRef.current - 1, 0));
+  }, [playFromIdx]);
 
-  const speeds = [0.8, 1, 1.15, 1.3, 1.5, 1.8];
-  const speedLabels = ['0.8×', '1×', '1.15×', '1.3×', '1.5×', '1.8×'];
+  const speeds      = [0.8, 1, 1.15, 1.3, 1.5, 1.8];
+  const speedLabels = ['0.8\u00d7', '1\u00d7', '1.15\u00d7', '1.3\u00d7', '1.5\u00d7', '1.8\u00d7'];
 
   const cycleSpeed = useCallback(() => {
-    const currentIndex = (speeds.indexOf(speedRef.current) + 1) % speeds.length;
-    speedRef.current = speeds[currentIndex];
-    setSpeed(speeds[currentIndex]);
-    if (playingRef.current && !pausedRef.current && synthRef.current) {
+    const next = speeds[(speeds.indexOf(speedRef.current) + 1) % speeds.length];
+    speedRef.current = next;
+    setSpeed(next);
+    if (playingRef.current && !pausedRef.current && engineRef.current === 'browser' && synthRef.current) {
       synthRef.current.cancel();
       speakItem();
     }
@@ -422,158 +555,168 @@ export default function TTSBar({ blocks, isOpen, onClose, onActiveBlock }: TTSBa
   }, []);
 
   useEffect(() => {
-    synthRef.current = window.speechSynthesis || null;
-    if (!synthRef.current) {
-      setInfo('TTS unavailable');
-      return undefined;
-    }
-
     document.body.classList.add('tts-on');
-    loadVoices();
-    const timerIds = [100, 250, 500, 1000, 2000, 4000].map((delay) => window.setTimeout(loadVoices, delay));
-    const keepAlive = window.setInterval(() => {
-      if (synthRef.current && playingRef.current && !pausedRef.current && synthRef.current.speaking) {
-        synthRef.current.pause();
-        synthRef.current.resume();
-      }
-    }, 10000);
-
-    const previousVoicesChanged = speechSynthesis.onvoiceschanged;
-    speechSynthesis.onvoiceschanged = () => loadVoices();
-
-    const handleClick = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (!target.closest('.tts-vwrap')) setVoiceMenuOpen(false);
+    synthRef.current = window.speechSynthesis || null;
+    let voiceTimers: number[] = [];
+    let keepAlive = 0;
+    let prevVoicesChanged: typeof speechSynthesis.onvoiceschanged = null;
+    if (synthRef.current) {
+      loadVoices();
+      voiceTimers = [100, 250, 500, 1000, 2000, 4000].map(d => window.setTimeout(loadVoices, d));
+      prevVoicesChanged = speechSynthesis.onvoiceschanged;
+      speechSynthesis.onvoiceschanged = () => loadVoices();
+      keepAlive = window.setInterval(() => {
+        if (synthRef.current && playingRef.current && !pausedRef.current && synthRef.current.speaking) {
+          synthRef.current.pause();
+          synthRef.current.resume();
+        }
+      }, 10000);
+    }
+    const handleClick = (ev: MouseEvent) => {
+      if (!(ev.target as HTMLElement).closest('.tts-vwrap')) setVoiceMenuOpen(false);
     };
-
-    const handleDoubleClick = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      const card = target.closest('.card') as HTMLElement | null;
+    const handleDblClick = (ev: MouseEvent) => {
+      const card = (ev.target as HTMLElement).closest('.card') as HTMLElement | null;
       if (!card) return;
-      const idx = blocks.findIndex((block) => block.id === card.id);
-      if (idx > -1) {
-        if (synthRef.current) synthRef.current.cancel();
-        pausedRef.current = false;
-        sentQRef.current = [];
-        sentIRef.current = 0;
-        idxRef.current = idx;
-        speakItem();
-      }
+      const idx = blocks.findIndex(b => b.id === card.id);
+      if (idx > -1) playFromIdx(idx);
     };
-
     document.addEventListener('click', handleClick);
-    document.addEventListener('dblclick', handleDoubleClick);
-    const starter = window.setTimeout(() => ttsStart(), 50);
-
-    return () => {
-      window.clearTimeout(starter);
-      timerIds.forEach((id) => window.clearTimeout(id));
+    document.addEventListener('dblclick', handleDblClick);
+    let cancelled = false;
+    let startTimer = 0;
+    const cleanup = () => {
+      cancelled = true;
+      window.clearTimeout(startTimer);
+      voiceTimers.forEach(t => window.clearTimeout(t));
       window.clearInterval(keepAlive);
       document.body.classList.remove('tts-on');
       document.removeEventListener('click', handleClick);
-      document.removeEventListener('dblclick', handleDoubleClick);
-      speechSynthesis.onvoiceschanged = previousVoicesChanged;
+      document.removeEventListener('dblclick', handleDblClick);
+      speechSynthesis.onvoiceschanged = prevVoicesChanged;
+      if (audioSrcRef.current) { try { audioSrcRef.current.stop(); } catch {} audioSrcRef.current = null; }
+      if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch {} audioCtxRef.current = null; }
       if (synthRef.current) synthRef.current.cancel();
+      playingRef.current = false;
       onActiveBlock(null);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blocks, loadVoices, onActiveBlock, ttsStart]);
+    if (_ko) {
+      engineRef.current = 'kokoro';
+      window.setTimeout(() => { if (!cancelled) { setEngine('kokoro'); setInfo('Ready'); } }, 0);
+      startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 50);
+      return cleanup;
+    }
+    engineRef.current = 'loading';
+    window.setTimeout(() => { if (!cancelled) { setEngine('loading'); setInfo('Loading voice…'); } }, 0);
+    initKokoro(pct => { if (!cancelled) setLoadPct(pct); })
+      .then(model => {
+        if (cancelled) return;
+        if (model) {
+          setEngine('kokoro');
+          engineRef.current = 'kokoro';
+          setInfo('Ready');
+          startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 100);
+        } else {
+          setEngine('browser');
+          engineRef.current = 'browser';
+          setInfo('Ready (browser voice)');
+          startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 100);
+        }
+      });
+    return cleanup;
+  }, [blocks, loadVoices, onActiveBlock, ttsStart, playFromIdx]);
 
   if (!isOpen) return null;
 
-  const voiceMenuItems: React.ReactNode[] = [];
-  {
-    let lastLangGroup = '';
-    voices.forEach((voice) => {
-      const langBase = (voice.lang || '').split('-')[0];
-      if (langBase !== lastLangGroup) {
-        if (langBase === 'en') {
-          voiceMenuItems.push(
-            <div key="sep-en" className="tts-vlang tts-vlang-en">
-              ENGLISH
-            </div>
-          );
-        } else if (lastLangGroup === 'en' || lastLangGroup === '') {
-          voiceMenuItems.push(
-            <div key="sep-other" className="tts-vlang tts-vlang-other">
-              OTHER LANGUAGES
-            </div>
-          );
-        }
-        lastLangGroup = langBase;
-      }
-      const badge = badgeForVoice(voice);
-      voiceMenuItems.push(
-        <button
-          key={`${voice.name}-${voice.lang}`}
-          className={`tts-vopt${selectedVoice?.name === voice.name ? ' sel' : ''}`}
-          type="button"
-          onClick={() => {
-            voiceRef.current = voice;
-            setSelectedVoice(voice);
-            setVoiceMenuOpen(false);
-            storageSet('ttsVoice', voice.name);
-            if (playingRef.current && !pausedRef.current && synthRef.current) {
-              synthRef.current.cancel();
-              speakItem();
-            }
-          }}
-        >
-          <span>
-            {voice.name.length > 32 ? `${voice.name.slice(0, 30)}\u2026` : voice.name}{' '}
-            <span className="tts-vlang-code">{voice.lang}</span>
-          </span>
-          {badge && <span className="tts-vbadge">{badge}</span>}
-        </button>
-      );
-    });
-  }
+  const voiceLabel = engine === 'browser'
+    ? shortBrowserName(selectedVoice)
+    : (KOKORO_VOICES.find(v => v.id === kokoroVoice)?.label ?? 'Onyx');
+
+  const voiceMenuContent = engine === 'browser'
+    ? voices.map(voice => {
+        const badge = badgeForVoice(voice);
+        return (
+          <button
+            key={`${voice.name}-${voice.lang}`}
+            className={`tts-vopt${selectedVoice?.name === voice.name ? ' sel' : ''}`}
+            type="button"
+            onClick={() => {
+              voiceRef.current = voice;
+              setSelectedVoice(voice);
+              setVoiceMenuOpen(false);
+              storageSet('ttsVoice', voice.name);
+              if (playingRef.current && !pausedRef.current && synthRef.current) {
+                synthRef.current.cancel();
+                speakItem();
+              }
+            }}
+          >
+            <span>
+              {voice.name.length > 32 ? `${voice.name.slice(0, 30)}\u2026` : voice.name}{' '}
+              <span className="tts-vlang-code">{voice.lang}</span>
+            </span>
+            {badge && <span className="tts-vbadge">{badge}</span>}
+          </button>
+        );
+      })
+    : [
+        <div key="kokoro-hdr" className="tts-vlang tts-vlang-en">KOKORO VOICES</div>,
+        ...KOKORO_VOICES.map(v => (
+          <button
+            key={v.id}
+            className={`tts-vopt${kokoroVoice === v.id ? ' sel' : ''}`}
+            type="button"
+            onClick={() => {
+              kokoroVoiceRef.current = v.id;
+              setKokoroVoice(v.id);
+              setVoiceMenuOpen(false);
+              storageSet('kokoroVoice', v.id);
+            }}
+          >
+            <span>{v.label}{' '}<span className="tts-vlang-code">{v.tag}</span></span>
+          </button>
+        )),
+      ];
 
   return (
     <div className="tts-bar open">
       <div className="tts-prog" style={{ '--tts-w': `${progress}%` } as React.CSSProperties} />
       <button className="tts-btn" onClick={ttsPrev} type="button">
-        ⏮
+        \u23ee
       </button>
       <button className={`tts-btn${playing && !paused ? ' active' : ''}`} onClick={ttsToggle} type="button">
-        {playing && !paused ? '⏸' : '▶'}
+        {playing && !paused ? '\u23f8' : '\u25b6'}
       </button>
       <button className="tts-btn" onClick={ttsNext} type="button">
-        ⏭
+        \u23ed
       </button>
       <button className="tts-btn" onClick={ttsStopFn} type="button">
-        ■
+        \u25a0
       </button>
-      <div className="tts-info">{info}</div>
+      <span className="tts-info">
+        {engine === 'loading'
+          ? `Loading\u2026${loadPct > 0 ? ` ${loadPct}%` : ''}`
+          : info}
+      </span>
+      <button className="tts-speed tts-btn" onClick={cycleSpeed} type="button">
+        {speedLabels[speeds.indexOf(speed)] ?? '1\u00d7'}
+      </button>
+      <button className="tts-style tts-btn" onClick={cycleStyle} type="button">
+        {STYLE_PROFILES[style].label}
+      </button>
       <div className="tts-vwrap">
-        <button className="tts-vbtn" onClick={() => { loadVoices(); setVoiceMenuOpen((v) => !v); }} type="button">
-          {shortName(selectedVoice)}
+        <button className="tts-vbtn" type="button" onClick={() => setVoiceMenuOpen(o => !o)}>
+          {voiceLabel}
+          <span className="tts-vbadge">
+            {engine === 'kokoro' ? 'Neural' : engine === 'loading' ? 'Loading' : (badgeForVoice(selectedVoice!) ?? selectedVoice?.lang ?? '')}
+          </span>
         </button>
         {voiceMenuOpen && (
-          <div className="tts-vmenu open">
-            <div className="tts-vtip">
-              💡 All voices on your device are shown below. iPhone: Settings → Accessibility → Spoken Content → Voices to download more. Personal Voice is not accessible to web apps (iOS limitation).
-            </div>
-            <button
-              className="tts-vopt tts-vrefresh"
-              type="button"
-              onClick={() => { loadVoices(); }}
-            >
-              ↻ Refresh ({voices.length} voices found)
-            </button>
-            {voiceMenuItems}
-            {!voices.length && (
-              <div className="tts-vopt">No voices found. Tap Refresh after a moment.</div>
-            )}
+          <div className="tts-vmenu">
+            {voiceMenuContent}
           </div>
         )}
       </div>
-      <button className="tts-speed" onClick={cycleSpeed} type="button">
-        {speedLabels[speeds.indexOf(speed)] || '1×'}
-      </button>
-      <button className="tts-style" onClick={cycleStyle} type="button" title={STYLE_PROFILES[style].label}>
-        {STYLE_PROFILES[style].label}
-      </button>
     </div>
   );
 }
