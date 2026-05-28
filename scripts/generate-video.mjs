@@ -382,33 +382,33 @@ for (const docMeta of docs) {
 
   let videoResult;
   if (useBg) {
-    // Pre-tile bg-loop to cover the full audio duration.
-    // -stream_loop causes freeze-frame stalls at every loop boundary because
-    // the decoder holds the last frame until the wrap-around keyframe is decoded.
-    // Tiling with stream-copy (-c copy) is fast and produces a contiguous file.
+    // Use ffmpeg's concat VIDEO FILTER (not stream-copy concat) so each copy of
+    // bg-loop.mp4 is decoded independently.  Stream-copy concat freezes because
+    // H.264 B/P-frames at the copy boundary reference frames that are no longer
+    // in the decoder's buffer.  The concat filter joins already-decoded YUV
+    // frames so there are no cross-boundary reference issues.
     const bgDur = getDuration(BG_LOOP);
     const loopsNeeded = Math.ceil(totalSeconds / bgDur) + 1;
-    const bgTileListPath = join(tmpDir, `${slug}-bg-tile.txt`);
-    const bgTiledPath    = join(tmpDir, `${slug}-bg-tiled.mp4`);
-    writeFileSync(bgTileListPath, Array(loopsNeeded).fill(`file '${BG_LOOP}'`).join('\n') + '\n');
-    console.log(`  Tiling bg-loop ×${loopsNeeded} to cover ${Math.round(totalSeconds)}s…`);
-    const tileResult = run(FFMPEG, [
-      '-y', '-f', 'concat', '-safe', '0', '-i', bgTileListPath,
-      '-t', String(totalSeconds + 2),
-      '-c', 'copy',
-      bgTiledPath,
-    ], { maxBuffer: 10 * 1024 * 1024 });
-    if (tileResult.status !== 0) {
-      console.error('  BG tile failed:\n', tileResult.stderr?.slice(-1000));
-    }
+    console.log(`  Using concat filter ×${loopsNeeded} bg copies to cover ${Math.round(totalSeconds)}s…`);
 
-    // Darken + desaturate, burn ASS subtitles
+    // Build: -i bg -i bg ... -i audio
+    const bgInputArgs = Array(loopsNeeded).flatMap(() => ['-i', BG_LOOP]);
+    const audioInputIdx = loopsNeeded; // 0..loopsNeeded-1 = bg, loopsNeeded = audio
+
+    // concat filter joins all bg copies, then trim + darken + subtitles
+    const concatSrcs = Array.from({ length: loopsNeeded }, (_, i) => `[${i}:v]`).join('');
+    const filterStr  =
+      `${concatSrcs}concat=n=${loopsNeeded}:v=1:a=0[bgcat];` +
+      `[bgcat]trim=end=${totalSeconds + 1},setpts=PTS-STARTPTS,` +
+      `eq=brightness=-0.30:saturation=0.30,ass='${assEscaped}'[v]`;
+
     videoResult = run(FFMPEG, [
       '-y',
-      '-i', bgTiledPath,
+      ...bgInputArgs,
       '-i', concatAacPath,
-      '-filter_complex', `[0:v]eq=brightness=-0.30:saturation=0.30,ass='${assEscaped}'[v]`,
-      '-map', '[v]', '-map', '1:a',
+      '-filter_complex', filterStr,
+      '-map', '[v]',
+      '-map', `${audioInputIdx}:a`,
       '-c:v', 'libx264', '-crf', '20', '-preset', 'slow',
       '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '192k',
@@ -416,7 +416,6 @@ for (const docMeta of docs) {
       '-shortest',
       outMp4,
     ], { maxBuffer: 50 * 1024 * 1024 });
-    [bgTileListPath, bgTiledPath].forEach(f => { try { unlinkSync(f); } catch { /* ignore */ } });
   } else {
     // Plain dark background → burn ASS subtitles
     videoResult = run(FFMPEG, [
