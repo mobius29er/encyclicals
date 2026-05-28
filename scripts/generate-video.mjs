@@ -392,7 +392,8 @@ for (const docMeta of docs) {
     console.log(`  Using concat filter ×${loopsNeeded} bg copies to cover ${Math.round(totalSeconds)}s…`);
 
     // Build: -i bg -i bg ... -i audio
-    const bgInputArgs = Array(loopsNeeded).flatMap(() => ['-i', BG_LOOP]);
+    // (Array(n).flatMap skips sparse slots — use Array.from instead)
+    const bgInputArgs = Array.from({ length: loopsNeeded }, () => ['-i', BG_LOOP]).flat();
     const audioInputIdx = loopsNeeded; // 0..loopsNeeded-1 = bg, loopsNeeded = audio
 
     // concat filter joins all bg copies, then trim + darken + subtitles
