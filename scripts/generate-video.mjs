@@ -97,11 +97,16 @@ function buildBgLoop(rebuildBg) {
   const tmpConcat = join(VIDEOS_DIR, '_bg-concat.txt');
   writeFileSync(tmpConcat, available.map(f => `file '${join(VIDEOS_DIR, f)}'`).join('\n') + '\n');
 
+  // Force regular 2-second keyframes + closed GOPs so the file can be looped
+  // and concatenated cleanly later without decoder-reference freezes.
   const r = run(FFMPEG, [
     '-y',
     '-f', 'concat', '-safe', '0', '-i', tmpConcat,
     '-vf', `scale=${VIDEO_W}:${VIDEO_H}:force_original_aspect_ratio=increase,crop=${VIDEO_W}:${VIDEO_H},setsar=1,fps=24`,
     '-c:v', 'libx264', '-crf', '23', '-preset', 'fast',
+    '-g', '48', '-keyint_min', '48', '-sc_threshold', '0',
+    '-force_key_frames', 'expr:gte(t,n_forced*2)',
+    '-x264-params', 'open-gop=0',
     '-an',
     BG_LOOP,
   ], { maxBuffer: 50 * 1024 * 1024 });
@@ -382,34 +387,46 @@ for (const docMeta of docs) {
 
   let videoResult;
   if (useBg) {
-    // Use ffmpeg's concat VIDEO FILTER (not stream-copy concat) so each copy of
-    // bg-loop.mp4 is decoded independently.  Stream-copy concat freezes because
-    // H.264 B/P-frames at the copy boundary reference frames that are no longer
-    // in the decoder's buffer.  The concat filter joins already-decoded YUV
-    // frames so there are no cross-boundary reference issues.
-    const bgDur = getDuration(BG_LOOP);
-    const loopsNeeded = Math.ceil(totalSeconds / bgDur) + 1;
-    console.log(`  Using concat filter ×${loopsNeeded} bg copies to cover ${Math.round(totalSeconds)}s…`);
+    // ── 4a. Pre-render a single, continuous, full-length bg video ─────
+    // The ONLY reliable way to loop a video without freeze sections is to
+    // produce one contiguous H.264 stream of the exact target duration:
+    //   - `-stream_loop -1` repeats the demux indefinitely
+    //   - `-t <duration>` truncates the OUTPUT once enough has been written
+    //   - libx264 re-encodes everything → every frame has correct references
+    //
+    // This file is cached at lib/videos/bg-tiled-<seconds>.mp4 so re-running
+    // the script (e.g. to tweak subtitles) does not re-tile.
+    const bgTiledPath = join(VIDEOS_DIR, `bg-tiled-${Math.ceil(totalSeconds + 2)}s.mp4`);
+    if (!existsSync(bgTiledPath)) {
+      console.log(`  Pre-rendering ${Math.round(totalSeconds + 2)}s continuous bg video (one-time, ~10–20 min)…`);
+      const tileResult = run(FFMPEG, [
+        '-y',
+        '-stream_loop', '-1', '-i', BG_LOOP,
+        '-t', String(totalSeconds + 2),
+        '-vf', `eq=brightness=-0.30:saturation=0.30,fps=24`,
+        '-c:v', 'libx264', '-crf', '22', '-preset', 'medium',
+        '-g', '48', '-keyint_min', '48', '-sc_threshold', '0',
+        '-pix_fmt', 'yuv420p',
+        '-an',
+        bgTiledPath,
+      ], { maxBuffer: 50 * 1024 * 1024 });
+      if (tileResult.status !== 0) {
+        console.error('  BG pre-render failed:\n', tileResult.stderr?.slice(-2000));
+        try { unlinkSync(bgTiledPath); } catch { /* ignore */ }
+        continue;
+      }
+      console.log(`  bg-tiled → ${bgTiledPath}`);
+    } else {
+      console.log(`  Reusing cached bg-tiled-${Math.ceil(totalSeconds + 2)}s.mp4`);
+    }
 
-    // Build: -i bg -i bg ... -i audio
-    // (Array(n).flatMap skips sparse slots — use Array.from instead)
-    const bgInputArgs = Array.from({ length: loopsNeeded }, () => ['-i', BG_LOOP]).flat();
-    const audioInputIdx = loopsNeeded; // 0..loopsNeeded-1 = bg, loopsNeeded = audio
-
-    // concat filter joins all bg copies, then trim + darken + subtitles
-    const concatSrcs = Array.from({ length: loopsNeeded }, (_, i) => `[${i}:v]`).join('');
-    const filterStr  =
-      `${concatSrcs}concat=n=${loopsNeeded}:v=1:a=0[bgcat];` +
-      `[bgcat]trim=end=${totalSeconds + 1},setpts=PTS-STARTPTS,` +
-      `eq=brightness=-0.30:saturation=0.30,ass='${assEscaped}'[v]`;
-
+    // ── 4b. Final compose: take the continuous bg, burn subs, mux audio ─
     videoResult = run(FFMPEG, [
       '-y',
-      ...bgInputArgs,
+      '-i', bgTiledPath,
       '-i', concatAacPath,
-      '-filter_complex', filterStr,
-      '-map', '[v]',
-      '-map', `${audioInputIdx}:a`,
+      '-filter_complex', `[0:v]ass='${assEscaped}'[v]`,
+      '-map', '[v]', '-map', '1:a',
       '-c:v', 'libx264', '-crf', '20', '-preset', 'slow',
       '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '192k',
