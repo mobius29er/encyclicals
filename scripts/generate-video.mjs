@@ -5,18 +5,15 @@
  * Prerequisites:
  *   1. Run `node scripts/generate-tts-audio.mjs` first (generates opus files).
  *   2. ffmpeg ≥ 4.4 with libx264, libopus, libass in PATH.
+ *   3. Place background MP4s in lib/videos/ (they'll be concat'd into bg-loop.mp4).
  *
  * Usage:
  *   node scripts/generate-video.mjs
  *   node scripts/generate-video.mjs --slug magnifica-humanitas
+ *   node scripts/generate-video.mjs --no-bg        (plain dark background)
+ *   node scripts/generate-video.mjs --rebuild-bg   (force re-create bg-loop.mp4)
  *
- * Output: public/video/<slug>.mp4
- *
- * Video specs:
- *   - 1920×1080, yuv420p, H.264 CRF 20, faststart (streaming-ready)
- *   - AAC 192 kbps stereo
- *   - Burned-in ASS subtitles: current paragraph text + chapter header
- *   - Total duration = sum of per-block audio durations
+ * Output: public/video/<slug>.mp4  +  public/video/<slug>.srt
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
@@ -40,12 +37,83 @@ const GOLD     = 'c8a45a';   // heading gold
 const SUBTITLE = 'd4c5a0';   // paragraph text
 const DIM      = '706050';   // secondary
 
+// ── background video sequence ─────────────────────────────────────────────
+// Ordered for a sacred/contemplative mood: Vatican aerials → ground level →
+// Rome streets → church interior → art → nature.
+// Portrait-orientation (14702189), low-res (4085017), and duplicate files are excluded.
+const BG_VIDEOS = [
+  '20156155-uhd_3840_2160_24fps.mp4',   // aerial St. Peter's golden hour
+  '20156161-uhd_3840_2160_24fps.mp4',   // aerial Vatican City golden hour
+  '20156158-uhd_3840_2160_24fps.mp4',   // close aerial of dome
+  '131856-751353008_medium.mp4',        // St. Peter's Square backlit silhouette
+  '129014-742902188_medium.mp4',        // St. Peter's Square, visitors
+  '113110-697208030_medium.mp4',        // fountain with dome in background
+  '5978886-hd_1920_1080_30fps.mp4',     // fountain in square, colonnade
+  '13517639_3840_2160_30fps.mp4',       // fountain, Bernini saints
+  '113120-697220606_medium.mp4',        // fountain stonework detail
+  '188736-883612374_medium.mp4',        // quiet Rome cobblestone street
+  '110731-688648661_medium.mp4',        // Via della Conciliazione
+  '13517163_3840_2160_30fps.mp4',       // crowded street to St. Peter's
+  '8395224-hd_1920_1080_25fps.mp4',     // interior St. Peter's nave
+  '42704-432102898_medium.mp4',         // baroque interior columns
+  '41042-427854697_medium.mp4',         // Raphael's School of Athens
+  '12105715-uhd_2560_1440.mp4',         // yellow wildflower field
+  '12238952-uhd_3840_2160_24fps.mp4',   // wetland reeds
+  '4032436-hd_1280_720_30fps.mp4',      // coastal sunset
+  '4808232-hd_1920_1080_24fps.mp4',     // lake/sea vista
+  '5936433-hd_1920_1080_30fps.mp4',     // savanna grassland
+  '6527107-hd_1920_1080_25fps.mp4',     // full moon over mountains
+  '9765065-uhd_3840_2160_30fps.mp4',    // water hyacinth flower
+];
+
+const VIDEOS_DIR = join(ROOT, 'lib', 'videos');
+const BG_LOOP    = join(VIDEOS_DIR, 'bg-loop.mp4');
+
 // ── utilities ─────────────────────────────────────────────────────────────
 
 function run(cmd, args, opts = {}) {
   const result = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
   if (result.error) throw result.error;
   return result;
+}
+
+/**
+ * Build (or rebuild) the looped background video from BG_VIDEOS.
+ * Skips creation if bg-loop.mp4 already exists unless --rebuild-bg is passed.
+ */
+function buildBgLoop(rebuildBg) {
+  const available = BG_VIDEOS.filter(f => existsSync(join(VIDEOS_DIR, f)));
+  if (available.length === 0) {
+    console.log('  No background videos found in lib/videos/ — using plain background.');
+    return false;
+  }
+
+  if (existsSync(BG_LOOP) && !rebuildBg) {
+    console.log(`  Background loop exists (${available.length} clips). Use --rebuild-bg to regenerate.`);
+    return true;
+  }
+
+  console.log(`  Building bg-loop.mp4 from ${available.length} clips (this runs once)…`);
+  const tmpConcat = join(VIDEOS_DIR, '_bg-concat.txt');
+  writeFileSync(tmpConcat, available.map(f => `file '${join(VIDEOS_DIR, f)}'`).join('\n') + '\n');
+
+  const r = run(FFMPEG, [
+    '-y',
+    '-f', 'concat', '-safe', '0', '-i', tmpConcat,
+    '-vf', `scale=${VIDEO_W}:${VIDEO_H}:force_original_aspect_ratio=increase,crop=${VIDEO_W}:${VIDEO_H},setsar=1,fps=24`,
+    '-c:v', 'libx264', '-crf', '23', '-preset', 'fast',
+    '-an',
+    BG_LOOP,
+  ], { maxBuffer: 50 * 1024 * 1024 });
+
+  try { unlinkSync(tmpConcat); } catch { /* ignore */ }
+
+  if (r.status !== 0) {
+    console.error('  bg-loop build failed:\n', r.stderr?.slice(-2000));
+    return false;
+  }
+  console.log(`  bg-loop.mp4 ready.`);
+  return true;
 }
 
 /** Get duration in seconds via ffprobe. Returns 0 on failure. */
@@ -108,7 +176,7 @@ function wrapText(text, maxChars = 72) {
  * - Section heads:   medium gold, centred
  * - Paragraphs:      cream, bottom-third
  */
-function buildASS(timeline, docTitle, docAuthor) {
+function buildASS(timeline, docTitle, _docAuthor) {
   const lines = [];
 
   lines.push('[Script Info]');
@@ -143,8 +211,8 @@ function buildASS(timeline, docTitle, docAuthor) {
   lines.push(`Style: Chapter,Georgia,80,${cGold},${cGold},${cBlack},${cShadow},1,0,0,0,100,100,2,0,1,3,2,5,160,160,80,1`);
   // Style: section head (medium, centred, gold)
   lines.push(`Style: SecHead,Georgia,52,${cGold},${cGold},${cBlack},${cShadow},0,1,0,0,100,100,1,0,1,2,1,5,120,120,60,1`);
-  // Style: paragraph (normal, bottom-centred, cream)
-  lines.push(`Style: Paragraph,Georgia,42,${cSubt},${cSubt},${cBlack},${cShadow},0,0,0,0,100,100,0,0,1,2,1,2,120,120,60,1`);
+  // Style: paragraph (normal, middle-centred, cream)
+  lines.push(`Style: Paragraph,Georgia,36,${cSubt},${cSubt},${cBlack},${cShadow},0,0,0,0,100,100,0,0,1,2,1,5,140,140,60,1`);
   // Style: small section label (top, dim)
   lines.push(`Style: Label,Georgia,32,${assColor(DIM)},${assColor(DIM)},${cBlack},${cShadow},0,0,0,0,100,100,0,0,1,1,0,8,80,80,40,1`);
   lines.push('');
@@ -152,9 +220,6 @@ function buildASS(timeline, docTitle, docAuthor) {
   lines.push('[Events]');
   lines.push('Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text');
 
-  // Title card: first 5 seconds
-  lines.push(`Dialogue: 0,0:00:00.00,0:00:03.50,Chapter,,0,0,0,,{\\fad(800,800)}${docTitle}`);
-  lines.push(`Dialogue: 0,0:00:01.00,0:00:04.50,SecHead,,0,0,0,,{\\fad(600,600)}${docAuthor}`);
 
   let currentChapter = '';
   for (const entry of timeline) {
@@ -166,20 +231,19 @@ function buildASS(timeline, docTitle, docAuthor) {
 
     if (block.type === 'chapter-header') {
       currentChapter = text;
-      lines.push(`Dialogue: 0,${s},${e},Chapter,,0,0,0,,{\\fad(600,600)}${text.replace(/,/g,'\\,')}`);
+      // Text is the last (10th) field in a Dialogue line — commas need no escaping
+      lines.push(`Dialogue: 0,${s},${e},Chapter,,0,0,0,,{\\fad(600,600)}${text}`);
     } else if (block.type === 'sec-head') {
-      lines.push(`Dialogue: 0,${s},${e},SecHead,,0,0,0,,{\\fad(400,400)}${text.replace(/,/g,'\\,')}`);
+      lines.push(`Dialogue: 0,${s},${e},SecHead,,0,0,0,,{\\fad(400,400)}${text}`);
     } else if (block.type === 'sub-head') {
-      lines.push(`Dialogue: 0,${s},${e},SecHead,,0,0,0,,{\\i1}${text.replace(/,/g,'\\,')}{\\i0}`);
+      lines.push(`Dialogue: 0,${s},${e},SecHead,,0,0,0,,{\\i1}${text}{\\i0}`);
     } else if (block.type === 'paragraph') {
-      // Label (chapter context) at top
+      // Chapter context label at top (alignment 8 = top-center)
       if (currentChapter) {
-        lines.push(`Dialogue: 1,${s},${e},Label,,0,0,0,,${currentChapter.slice(0,60).replace(/,/g,'\\,')}`);
+        lines.push(`Dialogue: 1,${s},${e},Label,,0,0,0,,${currentChapter.slice(0,60)}`);
       }
-      // Para number top-right
-      lines.push(`Dialogue: 1,${s},${e},Label,,0,0,0,,{\\an3}§${block.number ?? block.id}`);
-      // Paragraph text, wrapped
-      const wrapped = wrapText(text, 80).replace(/,/g,'\\,').replace(/\n/g,'\\N');
+      // Paragraph text, centered middle
+      const wrapped = wrapText(text, 58).replace(/\n/g,'\\N');
       lines.push(`Dialogue: 0,${s},${e},Paragraph,,0,0,0,,${wrapped}`);
     }
   }
@@ -216,6 +280,9 @@ if (!docs.length) {
   process.exit(1);
 }
 
+const argNoBg      = process.argv.includes('--no-bg');
+const argRebuildBg = process.argv.includes('--rebuild-bg');
+
 // Verify ffmpeg / ffprobe
 for (const bin of [FFMPEG, FFPROBE]) {
   const r = run(bin, ['-version']);
@@ -227,6 +294,9 @@ mkdirSync(videoDir, { recursive: true });
 
 const tmpDir = join(ROOT, '.tts-tmp');
 mkdirSync(tmpDir, { recursive: true });
+
+// Build background loop (once, cached)
+const useBg = !argNoBg && buildBgLoop(argRebuildBg);
 
 for (const docMeta of docs) {
   const { slug, title, author } = docMeta;
@@ -260,9 +330,8 @@ for (const docMeta of docs) {
     if (!dur) { console.warn(`    Zero duration: ${block.id}.opus`); continue; }
 
     timeline.push({ block, start: cursor, end: cursor + dur, dur, opusPath });
-    // Add a small inter-block gap (200ms) except after chapter headers (1s)
-    const gap = block.type === 'chapter-header' ? 1.0 : 0.2;
-    cursor += dur + gap;
+    // No gap added — subtitle timestamps must exactly match concatenated audio
+    cursor += dur;
   }
 
   const totalSeconds = cursor;
@@ -305,22 +374,44 @@ for (const docMeta of docs) {
   console.log(`  Audio → ${concatAacPath}`);
 
   // ── 4. Compose video ────────────────────────────────────────────────────
-  console.log('  Compositing video (this may take several minutes)…');
+  console.log(`  Compositing video${useBg ? ' (with background)' : ''} — this may take several minutes…`);
   if (existsSync(outMp4)) unlinkSync(outMp4);
 
-  // Background lavfi color source → burn ASS subtitles
-  const videoResult = run(FFMPEG, [
-    '-y',
-    '-f', 'lavfi', '-i', `color=c=#${BG}:s=${VIDEO_W}x${VIDEO_H}:r=24`,
-    '-i', concatAacPath,
-    '-filter_complex', `ass='${assPath}'`,
-    '-c:v', 'libx264', '-crf', '20', '-preset', 'slow',
-    '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '192k',
-    '-movflags', '+faststart',
-    '-shortest',
-    outMp4,
-  ], { maxBuffer: 50 * 1024 * 1024 });
+  // Escape path for use inside an ffmpeg filter string (colons and backslashes)
+  const assEscaped = assPath.replace(/\\/g, '\\\\').replace(/:/g, '\\:');
+
+  let videoResult;
+  if (useBg) {
+    // Loop background video, darken + desaturate, burn ASS subtitles
+    videoResult = run(FFMPEG, [
+      '-y',
+      '-stream_loop', '-1', '-i', BG_LOOP,
+      '-i', concatAacPath,
+      '-filter_complex', `[0:v]eq=brightness=-0.30:saturation=0.30,ass='${assEscaped}'[v]`,
+      '-map', '[v]', '-map', '1:a',
+      '-c:v', 'libx264', '-crf', '20', '-preset', 'slow',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '192k',
+      '-movflags', '+faststart',
+      '-shortest',
+      outMp4,
+    ], { maxBuffer: 50 * 1024 * 1024 });
+  } else {
+    // Plain dark background → burn ASS subtitles
+    videoResult = run(FFMPEG, [
+      '-y',
+      '-f', 'lavfi', '-i', `color=c=#${BG}:s=${VIDEO_W}x${VIDEO_H}:r=24`,
+      '-i', concatAacPath,
+      '-filter_complex', `ass='${assEscaped}'`,
+      '-map', '0:v', '-map', '1:a',
+      '-c:v', 'libx264', '-crf', '20', '-preset', 'slow',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '192k',
+      '-movflags', '+faststart',
+      '-shortest',
+      outMp4,
+    ], { maxBuffer: 50 * 1024 * 1024 });
+  }
 
   if (videoResult.status !== 0) {
     console.error('  Video compose failed:\n', videoResult.stderr?.slice(-2000));
