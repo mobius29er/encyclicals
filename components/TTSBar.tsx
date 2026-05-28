@@ -753,54 +753,77 @@ export default function TTSBar({ blocks, slug, isOpen, onClose, onActiveBlock }:
 
     const savedEngine = storageGet('ttsEngine') as Engine | null;
 
-    // Probe for pre-recorded audio
-    const probeUrl = `/audio/${slug}/p1.opus`;
-    fetch(probeUrl, { method: 'HEAD' }).then(r => {
+    const startKokoroOrBrowser = () => {
       if (cancelled) return;
-      if (r.ok && savedEngine !== 'kokoro' && savedEngine !== 'browser') {
-        // Pre-recorded available and user hasn't overridden
-        engineRef.current = 'prerecorded';
-        window.setTimeout(() => { if (!cancelled) { setEngine('prerecorded'); setInfo(''); } }, 0);
-        startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 80);
-      } else if (savedEngine === 'kokoro' || !r.ok) {
-        // Try Kokoro
-        engineRef.current = 'loading';
-        window.setTimeout(() => { if (!cancelled) { setEngine('loading'); setInfo('Loading voice\u2026'); } }, 0);
-        if (_ko) {
-          engineRef.current = 'kokoro';
-          window.setTimeout(() => { if (!cancelled) { setEngine('kokoro'); setInfo(''); } }, 0);
-          startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 50);
-        } else {
-          initKokoro(pct => { if (!cancelled) setLoadPct(pct); }).then(model => {
-            if (cancelled) return;
-            if (model) {
-              engineRef.current = 'kokoro';
-              window.setTimeout(() => { if (!cancelled) { setEngine('kokoro'); setInfo(''); } }, 0);
-            } else {
-              engineRef.current = 'browser';
-              window.setTimeout(() => { if (!cancelled) setEngine('browser'); }, 0);
-            }
-            startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 100);
-          });
-        }
-      } else {
-        // savedEngine === 'browser'
-        engineRef.current = 'browser';
-        window.setTimeout(() => { if (!cancelled) setEngine('browser'); }, 0);
-        startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 80);
-      }
-    }).catch(() => {
-      if (cancelled) return;
-      // No pre-recorded, fall to Kokoro
       engineRef.current = 'loading';
       window.setTimeout(() => { if (!cancelled) { setEngine('loading'); setInfo('Loading voice\u2026'); } }, 0);
+      if (_ko) {
+        engineRef.current = 'kokoro';
+        window.setTimeout(() => { if (!cancelled) { setEngine('kokoro'); setInfo(''); } }, 0);
+        startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 50);
+        return;
+      }
       initKokoro(pct => { if (!cancelled) setLoadPct(pct); }).then(model => {
         if (cancelled) return;
         engineRef.current = model ? 'kokoro' : 'browser';
-        window.setTimeout(() => { if (!cancelled) setEngine(model ? 'kokoro' : 'browser'); }, 0);
+        window.setTimeout(() => {
+          if (!cancelled) {
+            setEngine(model ? 'kokoro' : 'browser');
+            if (model) setInfo('');
+          }
+        }, 0);
         startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 100);
       });
-    });
+    };
+
+    const probePrerecorded = async (): Promise<boolean> => {
+      const firstPlayable = blocks.find(b => getReadText(b).trim().length > 1);
+      const urls = firstPlayable
+        ? [`/audio/${slug}/${firstPlayable.id}.opus`, `/audio/${slug}/p1.opus`]
+        : [`/audio/${slug}/p1.opus`];
+
+      for (const url of urls) {
+        try {
+          const head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+          if (head.ok) return true;
+        } catch {
+          // Some hosts/CDNs reject HEAD; try a tiny GET request below.
+        }
+        try {
+          const get = await fetch(url, {
+            method: 'GET',
+            cache: 'no-store',
+            headers: { Range: 'bytes=0-0' },
+          });
+          if (get.ok || get.status === 206) return true;
+        } catch {
+          // try next candidate
+        }
+      }
+      return false;
+    };
+
+    void (async () => {
+      const hasPrerecorded = await probePrerecorded();
+      if (cancelled) return;
+
+      if (hasPrerecorded && savedEngine !== 'browser') {
+        // Prefer pre-recorded by default whenever available.
+        engineRef.current = 'prerecorded';
+        window.setTimeout(() => { if (!cancelled) { setEngine('prerecorded'); setInfo(''); } }, 0);
+        startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 80);
+        return;
+      }
+
+      if (savedEngine === 'browser') {
+        engineRef.current = 'browser';
+        window.setTimeout(() => { if (!cancelled) setEngine('browser'); }, 0);
+        startTimer = window.setTimeout(() => { if (!cancelled) ttsStart(); }, 80);
+        return;
+      }
+
+      startKokoroOrBrowser();
+    })();
 
     return cleanup;
   }, [blocks, slug, loadVoices, onActiveBlock, ttsStart, playFromIdx]);
