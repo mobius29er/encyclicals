@@ -196,6 +196,9 @@ function splitNumberedParagraphs(text) {
 async function adapterBible(config) {
   const ref = config.source.value;                 // e.g. "John 3" or "Romans 8"
   const translation = config.translation || 'web'; // public-domain default (World English Bible)
+  // Douay-Rheims (and other bolls.life translations) are served by a different
+  // API than bible-api.com — route those through the bolls provider.
+  if (/^(drb|dra|douay)/i.test(translation)) return adapterBibleBolls(ref, 'DRB');
   const url = `https://bible-api.com/${encodeURIComponent(ref)}?translation=${translation}`;
   console.log(`  Fetching ${url} …`);
   const res = await fetch(url);
@@ -220,6 +223,51 @@ async function adapterBible(config) {
     });
   }
   return { nodes, paragraphCount: data.verses.length, autoMeta: { translation: data.translation_name } };
+}
+
+// Book-name aliases so traditional Douay-Rheims titles resolve to the API's names.
+const BIBLE_ALIASES = {
+  apocalypse: 'revelation', 'canticle of canticles': 'song of solomon',
+  'song of songs': 'song of solomon', ecclesiasticus: 'sirach', psalm: 'psalms',
+  '1 paralipomenon': '1 chronicles', '2 paralipomenon': '2 chronicles', qoheleth: 'ecclesiastes',
+};
+
+/** Douay-Rheims (and other bolls.life translations): numeric book ids + HTML verses. */
+async function adapterBibleBolls(ref, code) {
+  const m = ref.match(/^\s*(.+?)\s+(\d+)(?::(\d+)(?:\s*-\s*(\d+))?)?\s*$/);
+  if (!m) throw new Error(`Could not parse reference "${ref}" (expected e.g. "John 3" or "John 3:16-18")`);
+  const [, rawBook, chap, vStart, vEnd] = m;
+  const wanted = (BIBLE_ALIASES[rawBook.toLowerCase()] || rawBook).toLowerCase().replace(/\s+/g, '');
+
+  const booksUrl = `https://bolls.life/get-books/${code}/`;
+  console.log(`  Fetching ${booksUrl} …`);
+  const books = await (await fetch(booksUrl)).json();
+  const book = books.find((b) => b.name.toLowerCase().replace(/\s+/g, '') === wanted)
+    || books.find((b) => b.name.toLowerCase().replace(/\s+/g, '').startsWith(wanted));
+  if (!book) throw new Error(`Book "${rawBook}" not found in ${code}`);
+
+  const textUrl = `https://bolls.life/get-text/${code}/${book.bookid}/${chap}/`;
+  console.log(`  Fetching ${textUrl} …`);
+  let verses = await (await fetch(textUrl)).json();
+  if (!Array.isArray(verses) || !verses.length) throw new Error(`No verses for "${ref}" in ${code}`);
+  if (vStart) {
+    const a = parseInt(vStart, 10), b = vEnd ? parseInt(vEnd, 10) : a;
+    verses = verses.filter((v) => v.verse >= a && v.verse <= b);
+  }
+
+  const label = `${book.name} ${chap}`;
+  const nodes = [{ kind: 'chapter', id: slugify(label), label }];
+  for (const v of verses) {
+    const text = norm(String(v.text).replace(/<[^>]+>/g, ''));   // strip bolls markup
+    nodes.push({
+      kind: 'paragraph',
+      id: slugify(`${book.name}-${chap}-${v.verse}`),
+      number: v.verse,
+      html: `<span class="vnum">${v.verse}</span> ${text}`,
+      footnotes: [],
+    });
+  }
+  return { nodes, paragraphCount: verses.length, autoMeta: { translation: 'Douay-Rheims' } };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

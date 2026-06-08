@@ -86,7 +86,7 @@ Adapters (chosen with `--adapter` or `"adapter"` in the config):
 | Adapter | Input | Notes |
 | --- | --- | --- |
 | `encyclical` | Vatican / papalencyclicals HTML | Auto-detects salutation, body, references, footnote markers (`[N]`/`(N)`) and signature; merges continuation paragraphs and splits merged numbers. |
-| `bible` | reference string (e.g. `"Romans 8"`) | Fetches a public-domain translation; books/chapters → headers, verses → paragraphs. `--translation` defaults to `web`. |
+| `bible` | reference string (e.g. `"Romans 8"`, `"John 3:16-18"`) | Fetches a public-domain translation; books/chapters → headers, verses → paragraphs. `--translation` accepts `drb` (Douay-Rheims, Catholic), `web` (default), `kjv`, `clementine` (Latin Vulgate), `bbe`. |
 | `generic-html` | any HTML | `<h1..h4>` → chapter/sub-head, `<p>` → paragraph. |
 | `text` | plain `.txt` / paste | Blank-line paragraphs; ALL-CAPS / `Chapter…` lines → headers. |
 | `pdf` | local PDF | Extracts text (needs `pdfjs-dist`), then runs the `text` adapter. |
