@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Encyclicals Studio</title>
+<style>
+  :root {
+    --bg: #0d0905; --panel: #161009; --line: #2a2014; --gold: #c8a45a;
+    --cream: #d4c5a0; --dim: #8a7a60; --ok: #6fae6f; --err: #c87a6a; --run: #c8a45a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--cream);
+    font: 15px/1.5 Georgia, "Times New Roman", serif; }
+  header { padding: 20px 28px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; color: var(--gold); font-size: 22px; letter-spacing: .5px; }
+  header p { margin: 4px 0 0; color: var(--dim); font-size: 13px; }
+  .wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; padding: 22px 28px; align-items: start; }
+  @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card h2 { margin: 0 0 14px; color: var(--gold); font-size: 15px; text-transform: uppercase; letter-spacing: 1px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .5px; }
+  input, select, textarea { width: 100%; background: #0b0703; color: var(--cream); border: 1px solid var(--line);
+    border-radius: 6px; padding: 9px 10px; font: inherit; font-size: 14px; }
+  textarea { min-height: 120px; resize: vertical; }
+  .row { display: flex; gap: 12px; } .row > * { flex: 1; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+  .tab { padding: 7px 13px; border: 1px solid var(--line); border-radius: 20px; cursor: pointer; font-size: 13px; color: var(--dim); }
+  .tab.active { background: var(--gold); color: #1a1206; border-color: var(--gold); }
+  button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--gold);
+    background: var(--gold); color: #1a1206; padding: 10px 16px; font-size: 14px; }
+  button.ghost { background: transparent; color: var(--gold); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 4px; }
+  #log { background: #070401; border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; color: #b9a97f;
+    height: 320px; overflow: auto; white-space: pre-wrap; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--dim); }
+  .badge.run { color: var(--run); border-color: var(--run); }
+  .badge.done { color: var(--ok); border-color: var(--ok); }
+  .badge.error { color: var(--err); border-color: var(--err); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  td .mini { padding: 5px 9px; font-size: 12px; }
+  a { color: var(--gold); }
+  .statusline { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Encyclicals Studio</h1>
+  <p>Ingest a document, narrate it with your chosen voice, and render its video — all locally on this machine.</p>
+</header>
+
+<div class="wrap">
+  <!-- LEFT: new document -->
+  <div class="card">
+    <h2>New document</h2>
+
+    <label>Source</label>
+    <div class="tabs" id="srcTabs">
+      <div class="tab active" data-src="upload">Upload file</div>
+      <div class="tab" data-src="url">URL</div>
+      <div class="tab" data-src="bible">Bible reference</div>
+      <div class="tab" data-src="paste">Paste text</div>
+    </div>
+
+    <div id="src-upload" class="srcpane">
+      <input type="file" id="file" accept=".pdf,.html,.htm,.txt" />
+      <div class="hint" id="fileInfo">PDF, HTML, or plain text.</div>
+    </div>
+    <div id="src-url" class="srcpane" hidden>
+      <input id="url" placeholder="https://www.vatican.va/.../some-encyclical.html" />
+      <div class="hint">Vatican / papalencyclicals pages work best with the “encyclical” adapter.</div>
+    </div>
+    <div id="src-bible" class="srcpane" hidden>
+      <input id="bibleRef" placeholder="e.g. John 3  or  Romans 8:1-17" />
+      <label>Translation</label>
+      <select id="translation">
+        <option value="web">World English Bible (public domain)</option>
+        <option value="kjv">King James Version</option>
+        <option value="clementine">Clementine Vulgate (Latin)</option>
+        <option value="bbe">Bible in Basic English</option>
+      </select>
+    </div>
+    <div id="src-paste" class="srcpane" hidden>
+      <textarea id="paste" placeholder="Paste the document text here…"></textarea>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Adapter</label>
+        <select id="adapter">
+          <option value="encyclical">encyclical (numbered paragraphs)</option>
+          <option value="bible">bible (verses)</option>
+          <option value="generic-html">generic-html</option>
+          <option value="text">text</option>
+          <option value="pdf">pdf</option>
+        </select>
+      </div>
+      <div>
+        <label>Footnote markers</label>
+        <select id="footnoteStyle">
+          <option value="">auto-detect</option>
+          <option value="bracket">[1] brackets</option>
+          <option value="paren">(1) parentheses</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div><label>Title</label><input id="title" placeholder="Rerum Novarum" /></div>
+      <div><label>Slug</label><input id="slug" placeholder="auto from title" /></div>
+    </div>
+    <div class="row">
+      <div><label>Author</label><input id="author" placeholder="Pope Leo XIII" /></div>
+      <div><label>Date (YYYY-MM-DD)</label><input id="date" placeholder="1891-05-15" /></div>
+    </div>
+    <div class="row">
+      <div><label>Type</label><input id="type" placeholder="encyclical" value="encyclical" /></div>
+      <div><label>Subtitle</label><input id="subtitle" placeholder="On Capital and Labor" /></div>
+    </div>
+    <label>Summary</label>
+    <textarea id="summary" style="min-height:64px" placeholder="One or two sentences for the catalog."></textarea>
+
+    <div class="actions">
+      <button id="btnIngest">Ingest</button>
+      <button id="btnPipeline" class="ghost">Ingest + Narrate + Video</button>
+    </div>
+  </div>
+
+  <!-- RIGHT: narration + activity -->
+  <div class="card">
+    <h2>Narration & rendering</h2>
+    <div class="row">
+      <div>
+        <label>Voice</label>
+        <select id="voice"></select>
+      </div>
+      <div>
+        <label>Speed</label>
+        <input id="speed" type="number" step="0.05" min="0.5" max="1.5" value="1.0" />
+      </div>
+    </div>
+    <label><input type="checkbox" id="force" style="width:auto" /> &nbsp;Re-generate existing audio (force)</label>
+    <label style="margin-top:10px"><input type="checkbox" id="noBg" style="width:auto" /> &nbsp;Plain background (skip Vatican b-roll, much faster)</label>
+    <div class="hint">Target slug for narrate/video: <b id="activeSlug">—</b> (set by ingest, or click a row below)</div>
+    <div class="actions">
+      <button id="btnTts" class="ghost">Generate narration</button>
+      <button id="btnVideo" class="ghost">Render video</button>
+    </div>
+
+    <h2 style="margin-top:22px">Activity</h2>
+    <div class="statusline"><span id="jobKind" class="badge">idle</span><span id="jobStatus"></span></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div style="padding: 0 28px 32px">
+  <div class="card">
+    <h2>Library</h2>
+    <table>
+      <thead><tr><th>Title</th><th>Slug</th><th>Narration</th><th>Video</th><th>Actions</th></tr></thead>
+      <tbody id="docs"><tr><td colspan="5" style="color:var(--dim)">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let activeSlug = '';
+let currentSrc = 'upload';
+let uploadInfo = null; // {path, uploadType}
+
+// source tabs
+document.querySelectorAll('#srcTabs .tab').forEach((t) => t.onclick = () => {
+  currentSrc = t.dataset.src;
+  document.querySelectorAll('#srcTabs .tab').forEach((x) => x.classList.toggle('active', x === t));
+  document.querySelectorAll('.srcpane').forEach((p) => p.hidden = (p.id !== 'src-' + currentSrc));
+  // sensible adapter default per source
+  $('adapter').value = currentSrc === 'bible' ? 'bible' : 'encyclical';
+});
+
+// title → slug suggestion
+$('title').oninput = () => { if (!$('slug').dataset.touched) $('slug').value = slugify($('title').value); };
+$('slug').oninput = () => { $('slug').dataset.touched = '1'; };
+const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+// file upload (deferred until ingest)
+$('file').onchange = () => {
+  const f = $('file').files[0];
+  if (f) { $('fileInfo').textContent = `${f.name} — ${(f.size/1024).toFixed(0)} KB`;
+    if (!$('title').value) { $('title').value = f.name.replace(/\.[^.]+$/, ''); $('title').oninput(); } }
+};
+
+async function uploadFile() {
+  const f = $('file').files[0];
+  if (!f) throw new Error('Choose a file first');
+  const buf = await f.arrayBuffer();
+  const res = await fetch('/api/upload', { method: 'POST', headers: { 'x-filename': f.name }, body: buf });
+  uploadInfo = await res.json();
+  return uploadInfo;
+}
+
+function meta() {
+  return { title: $('title').value, subtitle: $('subtitle').value, author: $('author').value,
+    date: $('date').value, type: $('type').value, summary: $('summary').value };
+}
+
+async function buildIngestBody() {
+  const body = { adapter: $('adapter').value, slug: $('slug').value || slugify($('title').value),
+    meta: meta(), footnoteStyle: $('footnoteStyle').value };
+  if (currentSrc === 'upload') {
+    const up = await uploadFile();
+    body.sourceType = 'upload'; body.source = up.path; body.uploadType = up.uploadType;
+    if (body.adapter === 'pdf' && up.uploadType !== 'pdf') {} // user override allowed
+  } else if (currentSrc === 'url') {
+    body.sourceType = 'url'; body.source = $('url').value;
+  } else if (currentSrc === 'bible') {
+    body.adapter = 'bible'; body.source = $('bibleRef').value; body.translation = $('translation').value;
+  } else {
+    body.sourceType = 'paste'; body.source = $('paste').value;
+  }
+  return body;
+}
+
+// activity log + SSE
+function setJob(kind, status) { $('jobKind').textContent = kind; $('jobKind').className = 'badge ' + (status||''); }
+function logLine(s) { const el = $('log'); el.textContent += s + '\n'; el.scrollTop = el.scrollHeight; }
+
+function streamJob(jobId) {
+  return new Promise((resolve) => {
+    const es = new EventSource(`/api/job/${jobId}/stream`);
+    es.onmessage = (e) => logLine(JSON.parse(e.data).line);
+    es.addEventListener('end', (e) => {
+      const { status } = JSON.parse(e.data);
+      setJob($('jobKind').textContent, status);
+      $('jobStatus').textContent = status === 'done' ? '✓ finished' : '✗ failed';
+      es.close(); refreshDocs(); resolve(status);
+    });
+    es.onerror = () => { es.close(); resolve('error'); };
+  });
+}
+
+async function post(path, body, kind) {
+  setJob(kind, 'run'); $('jobStatus').textContent = '';
+  logLine(`\n── ${kind} ───────────────────────────────`);
+  const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok || data.error) { logLine('Error: ' + (data.error || res.status)); setJob(kind, 'error'); return null; }
+  if (data.slug) { activeSlug = data.slug; $('activeSlug').textContent = data.slug; }
+  return streamJob(data.jobId).then((status) => status === 'done' ? data : null);
+}
+
+$('btnIngest').onclick = async () => post('/api/ingest', await buildIngestBody(), 'ingest');
+$('btnTts').onclick = () => {
+  if (!activeSlug) return alert('No active document — ingest one or click a library row.');
+  post('/api/tts', { slug: activeSlug, voice: $('voice').value, speed: $('speed').value, force: $('force').checked }, 'narrate');
+};
+$('btnVideo').onclick = () => {
+  if (!activeSlug) return alert('No active document — ingest one or click a library row.');
+  post('/api/video', { slug: activeSlug, noBg: $('noBg').checked }, 'video');
+};
+$('btnPipeline').onclick = async () => {
+  const ing = await post('/api/ingest', await buildIngestBody(), 'ingest');
+  if (!ing) return;
+  const tts = await post('/api/tts', { slug: activeSlug, voice: $('voice').value, speed: $('speed').value, force: $('force').checked }, 'narrate');
+  if (!tts) return;
+  await post('/api/video', { slug: activeSlug, noBg: $('noBg').checked }, 'video');
+};
+
+// voices
+async function loadVoices() {
+  const { voices } = await (await fetch('/api/voices')).json();
+  const sel = $('voice');
+  sel.innerHTML = '';
+  for (const v of voices) {
+    const o = document.createElement('option');
+    o.value = v.id; o.textContent = `${v.label}  (${v.id})`;
+    if (v.id === 'am_onyx') o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+// library
+async function refreshDocs() {
+  const { documents } = await (await fetch('/api/documents')).json();
+  const tb = $('docs');
+  tb.innerHTML = '';
+  if (!documents.length) { tb.innerHTML = '<tr><td colspan="5" style="color:var(--dim)">No documents yet.</td></tr>'; return; }
+  for (const d of documents) {
+    const tr = document.createElement('tr');
+    const a = d.audio || { have: 0, readable: 0 };
+    const narr = a.readable && a.have >= a.readable ? '✓ complete'
+      : a.have ? `${a.have}/${a.readable}` : '—';
+    tr.innerHTML = `
+      <td>${d.title || ''}</td>
+      <td><code>${d.slug}</code></td>
+      <td>${narr}</td>
+      <td>${d.video ? `<a href="/../public/video/${d.slug}.mp4">▶ mp4</a>` : '—'}</td>
+      <td>
+        <button class="mini ghost" data-act="select" data-slug="${d.slug}">Select</button>
+        <button class="mini ghost" data-act="tts" data-slug="${d.slug}">Narrate</button>
+        <button class="mini ghost" data-act="video" data-slug="${d.slug}">Video</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll('button').forEach((b) => b.onclick = () => {
+    activeSlug = b.dataset.slug; $('activeSlug').textContent = activeSlug;
+    if (b.dataset.act === 'tts') $('btnTts').onclick();
+    if (b.dataset.act === 'video') $('btnVideo').onclick();
+  });
+}
+
+loadVoices();
+refreshDocs();
+setInterval(refreshDocs, 8000);
+</script>
+</body>
+</html>

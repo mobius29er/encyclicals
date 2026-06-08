@@ -7,5 +7,16 @@
     "dateDisplay": "May 15, 2026",
     "type": "encyclical",
     "summary": "Pope Leo XIV's first social encyclical addresses human dignity, artificial intelligence, the common good, and the civilization of love in the digital age."
+  },
+  {
+    "slug": "rerum-novarum",
+    "title": "Rerum Novarum",
+    "subtitle": "On Capital and Labor",
+    "author": "Pope Leo XIII",
+    "date": "1891-05-15",
+    "dateDisplay": "May 15, 1891",
+    "type": "encyclical",
+    "summary": "Pope Leo XIII's foundational social encyclical on the condition of the working classes: it defends the natural right to private property and a just wage, rejects socialism as a false remedy, and sets out the duties of workers, employers, the Church, and the State.",
+    "source": "Vatican, 1891"
   }
 ]

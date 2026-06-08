@@ -48,3 +48,6 @@ next-env.d.ts
 
 # tts temp files
 /.tts-tmp/
+
+# studio working files (uploads, generated configs, source caches)
+/.studio-tmp/

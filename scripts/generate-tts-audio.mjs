@@ -15,11 +15,26 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync } from '
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
+import { parseArgs } from 'util';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
-const VOICE = 'am_onyx';
-const SPEED = 1.0;
+
+// CLI: --slug <slug>  limit to one document
+//      --voice <name> Kokoro voice (default am_onyx)
+//      --speed <n>    speaking rate (default 1.0)
+//      --force        regenerate even if the .opus already exists
+const { values: ARGS } = parseArgs({
+  args: process.argv.slice(2),
+  options: {
+    slug: { type: 'string' },
+    voice: { type: 'string', default: 'am_onyx' },
+    speed: { type: 'string', default: '1.0' },
+    force: { type: 'boolean', default: false },
+  },
+});
+const VOICE = ARGS.voice;
+const SPEED = parseFloat(ARGS.speed) || 1.0;
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -96,8 +111,11 @@ const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX
 console.log('Model loaded.\n');
 
 const index = JSON.parse(readFileSync(join(ROOT, 'content/documents/index.json'), 'utf8'));
+const docs = ARGS.slug ? index.filter((d) => d.slug === ARGS.slug) : index;
+if (ARGS.slug && docs.length === 0) { console.error(`No document with slug "${ARGS.slug}"`); process.exit(1); }
+console.log(`Voice: ${VOICE}  Speed: ${SPEED}${ARGS.force ? '  (force)' : ''}`);
 
-for (const { slug } of index) {
+for (const { slug } of docs) {
   const docPath = join(ROOT, `content/documents/${slug}.json`);
   if (!existsSync(docPath)) { console.warn(`Missing: ${docPath}`); continue; }
 
@@ -115,7 +133,7 @@ for (const { slug } of index) {
     if (!text || text.length < 3) continue;
 
     const opusPath = join(outDir, `${block.id}.opus`);
-    if (existsSync(opusPath)) { skipped++; continue; }
+    if (existsSync(opusPath) && !ARGS.force) { skipped++; continue; }
 
     process.stdout.write(`  ${block.id.padEnd(18)} `);
 

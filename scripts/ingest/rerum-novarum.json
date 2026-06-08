@@ -1,0 +1,37 @@
+{
+  "slug": "rerum-novarum",
+  "adapter": "encyclical",
+  "source": {
+    "type": "url",
+    "value": "https://www.papalencyclicals.net/leo13/l13rerum.htm",
+    "cache": "/tmp/rn-work/pe.html"
+  },
+  "signatureName": "LEO XIII",
+  "footnotes": { "markerStyle": "bracket" },
+  "meta": {
+    "title": "Rerum Novarum",
+    "subtitle": "On Capital and Labor",
+    "author": "Pope Leo XIII",
+    "date": "1891-05-15",
+    "type": "encyclical",
+    "summary": "Pope Leo XIII's foundational social encyclical on the condition of the working classes: it defends the natural right to private property and a just wage, rejects socialism as a false remedy, and sets out the duties of workers, employers, the Church, and the State.",
+    "source": "Vatican, 1891"
+  },
+  "fixes": [
+    ["the masses; in the increased", "the masses; the increased"],
+    ["Lord of Sabbath", "Lord of Sabaoth"],
+    ["mouthh of our Lord", "mouth of our Lord"],
+    ["as one ills", "as one wills"],
+    ["in he words of the same", "in the words of the same"],
+    ["If we turn not to things external", "If we turn now to things external"],
+    ["persuaded that that main thing", "persuaded that the main thing"]
+  ],
+  "chapters": [
+    { "id": "introduction", "label": "Introduction", "from": 1, "to": 3, "address": true },
+    { "id": "chapter-1", "label": "I. Socialism, a False Remedy", "from": 4, "to": 15 },
+    { "id": "chapter-2", "label": "II. The Church and the Social Question", "from": 16, "to": 31 },
+    { "id": "chapter-3", "label": "III. The Role of the State", "from": 32, "to": 42 },
+    { "id": "chapter-4", "label": "IV. The Question of Wages", "from": 43, "to": 47 },
+    { "id": "chapter-5", "label": "V. Workers’ Associations", "from": 48, "to": 64 }
+  ]
+}
